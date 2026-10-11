@@ -469,6 +469,51 @@ else
 fi
 check_file "DebExtractor.kt" "$ROOT/engine/src/main/java/io/dsh/fusion/engine/llm/DebExtractor.kt"
 
+# 模型目录：三档必须都有模型，否则「按内存推荐」会给出 null
+CATALOG="$ROOT/engine/src/main/java/io/dsh/fusion/engine/llm/LocalModelCatalog.kt"
+TIERS=$(grep -c "tier = Tier\." "$CATALOG" 2>/dev/null || true)
+TIERS=${TIERS:-0}
+if [ "$TIERS" -ge 3 ]; then
+  pass "模型目录覆盖三档配置（$TIERS 个）"
+else
+  fail "模型目录只覆盖 $TIERS 档 —— 按内存推荐会漏档"
+fi
+# 每个模型都要有主源与备用源：手机下 GB 级文件，单源挂了等于功能挂了
+MS=$(grep -c "^            modelScope = " "$CATALOG" 2>/dev/null || true); MS=${MS:-0}
+HF=$(grep -c "^            hfMirror = " "$CATALOG" 2>/dev/null || true); HF=${HF:-0}
+if [ "$MS" -ge 1 ] && [ "$MS" -eq "$HF" ]; then
+  pass "每个模型都有主源与备用源（各 $MS 个）"
+else
+  fail "主源 $MS 个 / 备用源 $HF 个 —— 数量不等说明有模型只配了一个源"
+fi
+# 大小必须来自实测：写 0 或写个整数占位都会让「内存推荐」失真
+if grep -qE "bytes = 0([,_]|)" "$CATALOG"; then
+  fail "有模型的 bytes 是 0 —— 大小必须填实测值"
+else
+  pass "模型大小都有实测字节数"
+fi
+
+# 主源可达性：只做**警告**不做失败 —— 交付自检要能离线跑。
+#
+# 探测目标用**仓库 API** 而不是模型文件 URL：模型 URL 在 Kotlin 里是用 ms() 拼的，
+# 文件里没有完整字面量可提取（第一版就是这么写的，提取结果为空、整段检查静默没跑 ——
+# 而**静默不跑的自检比没有自检更糟**，它会让人以为验过了）。
+if command -v curl >/dev/null 2>&1; then
+  REPO=$(grep -m1 -oE '"unsloth/DeepSeek-R1-Distill-[A-Za-z0-9.\-]+-GGUF"' "$CATALOG" 2>/dev/null | tr -d '"')
+  if [ -n "$REPO" ]; then
+    CODE=$(timeout 25 curl -sS -o /dev/null -w "%{http_code}" "https://modelscope.cn/api/v1/models/$REPO" 2>/dev/null || echo 000)
+    if [ "$CODE" = "200" ]; then
+      pass "模型仓库可达（$REPO）"
+    else
+      warn "模型仓库探测返回 HTTP $CODE（$REPO）—— 可能网络不通，也可能仓库已改名，需人工确认"
+    fi
+  else
+    warn "从目录里提取不到模型仓库名 —— 可达性检查**没有执行**（不是通过）"
+  fi
+else
+  warn "缺 curl，跳过模型源可达性检查"
+fi
+
 # ---------------------------------------------------------------- 汇总
 echo
 echo "═══════════════════════════════════════════════════════════════"

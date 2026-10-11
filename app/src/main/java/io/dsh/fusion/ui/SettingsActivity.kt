@@ -398,8 +398,9 @@ class SettingsActivity : AppCompatActivity() {
         val rec = io.dsh.fusion.engine.llm.LocalModelCatalog.recommend(ramGb)
 
         val labels = models.map { m ->
-            val mark = if (m.id == rec?.id) "（推荐）" else ""
-            "${m.title}$mark\n${m.prettySize} · 建议内存 ≥${m.minRamGb} GB\n${m.note}"
+            val mark = if (m.id == rec?.id) "  ← 按你的内存推荐" else ""
+            val tierTag = m.tier?.let { "［${it.label}档 ${it.ramGb}GB］" } ?: "［验证用］"
+            "${m.title}$mark\n$tierTag ${m.prettySize} · 建议内存 ≥${m.minRamGb.toInt()} GB\n${m.note}"
         }.toTypedArray()
         AlertDialog.Builder(this)
             .setTitle("选择模型（本机内存 ${"%.1f".format(ramGb)} GB）")
