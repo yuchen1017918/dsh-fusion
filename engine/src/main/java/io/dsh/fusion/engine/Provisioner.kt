@@ -2,6 +2,7 @@ package io.dsh.fusion.engine
 
 import android.content.Context
 import io.dsh.fusion.engine.provision.DshProvisioner
+import io.dsh.fusion.engine.plugin.SafeMode
 import io.dsh.fusion.engine.provision.KernelBundleProvisioner
 import io.dsh.fusion.engine.provision.NpmProvisioner
 import io.dsh.fusion.engine.provision.PluginManager
@@ -36,6 +37,14 @@ class Provisioner(
 
     /** 内置内核包（随 APK 发货的那份）。 */
     val kernelBundle = KernelBundleProvisioner(context, paths)
+
+    /**
+     * 安全模式：插件把界面搞死之后的自救通道。
+     *
+     * 它必须在**原生界面**里可达 —— 恢复入口画在网页里等于没有，
+     * 因为网页挂了它一起挂。桌面版为此做了原生弹窗，我们这里常驻设置页。
+     */
+    val safeMode = SafeMode(paths.profileDir(FusionPaths.PROFILE_NAME))
 
     fun survey(): List<Step> = listOf(
         Step("runtime", "内置运行时（bionic Node 24 + PRoot）", paths.runtimeSeeded(),

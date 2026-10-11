@@ -24,6 +24,9 @@ PASS=0; FAIL=0; WARN=0
 pass() { echo "${C_OK}✔${C_R} $*"; PASS=$((PASS+1)); }
 fail() { echo "${C_ERR}✘${C_R} $*"; FAIL=$((FAIL+1)); }
 warn() { echo "${C_WARN}!${C_R} $*"; WARN=$((WARN+1)); }
+# 只看文件在不在。注意用 grep -m1 而不是 head -1：后者会让 grep 收到 SIGPIPE
+# 而在 pipefail 下丢掉输出 —— 这个坑在实验分支上踩过一次。
+check_file() { local label="$1" path="$2"; if [ -f "$path" ]; then pass "$label 存在"; else fail "$label 缺失：$path"; fi; }
 dim()  { echo "${C_DIM}    $*${C_R}"; }
 
 # 系统库里本来就有的，不需要我们自己带
@@ -239,6 +242,39 @@ PYEOF
   if [ $? -eq 0 ]; then PASS=$((PASS+1)); else FAIL=$((FAIL+1)); fi
 else
   warn "跳过（缺 APK 或 python3）"
+fi
+
+# ---------------------------------------------------------------- 9. 安全模式
+echo
+echo "── 9. 安全模式（插件搞死界面后的自救通道）────────────────"
+check_file "SafeMode.kt" "$ROOT/engine/src/main/java/io/dsh/fusion/engine/plugin/SafeMode.kt"
+
+# 官方 bundles 必须是两项 —— 写错了「禁用所有插件」就会连官方内核一起禁掉，
+# 那会让引擎彻底起不来（比插件坏掉更严重）
+OFFICIAL=$(grep -c '"@deepseek-ai/dsh-' "$ROOT/engine/src/main/java/io/dsh/fusion/engine/plugin/SafeMode.kt" 2>/dev/null || echo 0)
+if [ "$OFFICIAL" -ge 2 ]; then
+  pass "官方 bundles 列表已硬编码（$OFFICIAL 项）"
+else
+  fail "SafeMode 里的官方 bundles 列表不完整 —— 禁用插件会误伤官方内核"
+fi
+
+# 名字必须与官方 profile.ts 的常量一致，不一致会备份一个不存在的文件
+if grep -q "cordis.patch.yml" "$ROOT/engine/src/main/java/io/dsh/fusion/engine/plugin/SafeMode.kt"; then
+  pass "补丁文件名与官方一致（cordis.patch.yml）"
+else
+  fail "补丁文件名与官方 PROFILE_PATCH_FILENAME 不一致"
+fi
+
+# 恢复入口必须在原生侧可达：画在网页里等于没有（网页挂了它一起挂）
+if grep -q "buildSafeModeBox" "$ROOT/app/src/main/java/io/dsh/fusion/ui/SettingsActivity.kt"; then
+  pass "原生设置页有常驻入口"
+else
+  fail "安全模式没有原生入口 —— 界面挂了就没法自救"
+fi
+if grep -q "进入安全模式" "$ROOT/app/src/main/java/io/dsh/fusion/ui/MainActivity.kt"; then
+  pass "引擎启动失败时给出引导"
+else
+  warn "启动失败时没有引导到安全模式"
 fi
 
 # ---------------------------------------------------------------- 汇总

@@ -22,6 +22,7 @@ import io.dsh.fusion.service.EngineService
 import io.dsh.fusion.voice.VoiceModels
 import io.dsh.fusion.voice.WakeWordService
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -160,6 +161,7 @@ class SettingsActivity : AppCompatActivity() {
 
         // ---------------- 插件 ----------------
         column.addView(spaced(UiKit.card(this, "插件", buildPluginBox())))
+        column.addView(spaced(UiKit.card(this, "安全模式", buildSafeModeBox())))
 
         // ---------------- 关于 ----------------
         val about = UiKit.text(
@@ -269,6 +271,160 @@ class SettingsActivity : AppCompatActivity() {
                 .setNegativeButton("稍后", null)
                 .show()
         }
+    }
+
+    // ------------------------------------------------------------------ 安全模式
+
+    /**
+     * 安全模式卡片。
+     *
+     * 为什么它必须在**原生**设置页里：插件跑在引擎进程里，一个坏插件能让整个
+     * Web UI 起不来。而恢复入口画在那个 UI 里等于没有 —— 页面挂了它一起挂。
+     * 桌面版为此做了原生弹窗（`DesktopFatalRecovery`），网页版没有这个能力。
+     * 我们的壳本身就是宿主，所以能做，而且能做得更完整：
+     * 桌面版只在启动失败时弹一次，这里是常驻入口，还能看到并还原备份。
+     */
+    private fun buildSafeModeBox(): View {
+        val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        val safe = FusionRuntime.provisioner().safeMode
+        val diag = safe.diagnose()
+
+        box.addView(UiKit.text(
+            this,
+            "插件跑在引擎进程里，一个坏插件能让整个界面起不来。\n" +
+                "而恢复按钮恰恰不能画在那个界面里 —— 页面挂了它一起挂，所以它在这里。\n" +
+                "所有操作都是**改名备份**，不删任何东西，随时可以还原。",
+            12.5f, UiKit.TEXT_DIM,
+        ).apply { setPadding(0, 0, 0, UiKit.dp(this@SettingsActivity, 10f)) })
+
+        val thirdText = if (diag.isClean) {
+            "当前：${diag.totalBundles} 个 bundle（全部官方）· 补丁 ${diag.patchFileBytes / 1024} KB"
+        } else {
+            "当前：${diag.totalBundles} 个 bundle，其中**第三方 ${diag.thirdPartyCount} 个**\n" +
+                "补丁文件 ${diag.patchFileBytes / 1024} KB · 历史备份 ${diag.backups} 份"
+        }
+        box.addView(UiKit.text(this, thirdText, 12.5f, if (diag.isClean) UiKit.ACCENT else UiKit.WARN)
+            .apply { setPadding(0, 0, 0, UiKit.dp(this@SettingsActivity, 12f)) })
+
+        if (!diag.isClean) {
+            val preview = diag.thirdPartyBundles.take(6).joinToString("、") { it.substringAfterLast('/') }
+            box.addView(UiKit.text(
+                this,
+                preview + if (diag.thirdPartyCount > 6) " 等 ${diag.thirdPartyCount} 个" else "",
+                11.5f, UiKit.TEXT_DIM,
+            ).apply { setPadding(0, 0, 0, UiKit.dp(this@SettingsActivity, 12f)) })
+        }
+
+        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        row.addView(UiKit.pill(this, "禁用全部第三方插件", primary = !diag.isClean) { confirmDisablePlugins() })
+        row.addView(android.view.View(this).apply {
+            layoutParams = LinearLayout.LayoutParams(UiKit.dp(this@SettingsActivity, 8f), 1)
+        })
+        row.addView(UiKit.pill(this, "备份与还原（${diag.backups}）") { showBackups() })
+        box.addView(row)
+
+        if (!diag.isClean) {
+            box.addView(UiKit.text(
+                this,
+                "界面起不来时，先点左边那个：它会停引擎、把补丁改名、把依赖清单重置成官方两项，然后重启。",
+                11.5f, UiKit.TEXT_DIM,
+            ).apply { setPadding(0, UiKit.dp(this@SettingsActivity, 10f), 0, 0) })
+        }
+        return box
+    }
+
+    private fun confirmDisablePlugins() {
+        val safe = FusionRuntime.provisioner().safeMode
+        val diag = safe.diagnose()
+        if (diag.isClean) {
+            Toast.makeText(this, "当前没有第三方插件", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val list = diag.thirdPartyBundles.take(12).joinToString("\n") { "· $it" } +
+            if (diag.thirdPartyCount > 12) "\n…还有 ${diag.thirdPartyCount - 12} 个" else ""
+
+        AlertDialog.Builder(this)
+            .setTitle("禁用全部第三方插件？")
+            .setMessage(
+                "将要禁用 ${diag.thirdPartyCount} 个：\n\n$list\n\n" +
+                    "会做三件事：\n" +
+                    "1. 停掉引擎\n" +
+                    "2. 把 cordis.patch.yml 改名成带时间戳的备份\n" +
+                    "3. 把依赖清单重置为官方两项，然后重启\n\n" +
+                    "不删除任何文件，之后可以在「备份与还原」里退回。",
+            )
+            .setPositiveButton("禁用并重启") { _, _ -> disablePluginsNow() }
+            .setNegativeButton("取消", null)
+            .show()
+    }
+
+    private fun disablePluginsNow() {
+        lifecycleScope.launch {
+            val safe = FusionRuntime.provisioner().safeMode
+            Toast.makeText(this@SettingsActivity, "正在停引擎…", Toast.LENGTH_SHORT).show()
+            // 必须先停引擎：它正在跑时改 bundles 与补丁，轻则改了不生效，
+            // 重则让 cordis 读到半截补丁 —— 那正是我们想避免的那种故障
+            io.dsh.fusion.service.EngineService.start(this@SettingsActivity, io.dsh.fusion.service.EngineService.ACTION_STOP)
+            delay(1200)
+            val outcome = withContext(Dispatchers.IO) { safe.disableAllPlugins() }
+            AlertDialog.Builder(this@SettingsActivity)
+                .setTitle(if (outcome.ok) "已进入安全模式" else "操作失败")
+                .setMessage(outcome.message + (outcome.detail?.let { "\n\n$it" } ?: ""))
+                .setPositiveButton("重启引擎") { _, _ ->
+                    io.dsh.fusion.service.EngineService.start(this@SettingsActivity, io.dsh.fusion.service.EngineService.ACTION_RESTART)
+                    render()
+                }
+                .setNegativeButton("稍后", null)
+                .show()
+        }
+    }
+
+    private fun showBackups() {
+        val safe = FusionRuntime.provisioner().safeMode
+        val backups = safe.listBackups()
+        if (backups.isEmpty()) {
+            Toast.makeText(this, "还没有任何备份", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val labels = backups.map { b ->
+            val time = java.text.SimpleDateFormat("MM-dd HH:mm", java.util.Locale.US).format(java.util.Date(b.atMillis))
+            "${b.kind.label} · $time · ${b.prettySize}\n${b.name.take(58)}"
+        }.toTypedArray()
+
+        AlertDialog.Builder(this)
+            .setTitle("备份与还原（${backups.size} 份，新的在前）")
+            .setItems(labels) { _, index -> confirmRestore(backups[index]) }
+            .setNegativeButton("关闭", null)
+            .show()
+    }
+
+    private fun confirmRestore(backup: io.dsh.fusion.engine.plugin.SafeMode.Backup) {
+        AlertDialog.Builder(this)
+            .setTitle("还原这一份？")
+            .setMessage(
+                "${backup.name}\n\n" +
+                    "会把当前状态先存一份（bak-beforeRestore-*），再用这份覆盖。\n" +
+                    "还原后需要重启引擎才生效。",
+            )
+            .setPositiveButton("还原并重启") { _, _ ->
+                lifecycleScope.launch {
+                    io.dsh.fusion.service.EngineService.start(this@SettingsActivity, io.dsh.fusion.service.EngineService.ACTION_STOP)
+                    delay(1200)
+                    val safe = FusionRuntime.provisioner().safeMode
+                    val outcome = withContext(Dispatchers.IO) { safe.restore(backup) }
+                    AlertDialog.Builder(this@SettingsActivity)
+                        .setTitle(if (outcome.ok) "已还原" else "还原失败")
+                        .setMessage(outcome.message)
+                        .setPositiveButton("重启引擎") { _, _ ->
+                            io.dsh.fusion.service.EngineService.start(this@SettingsActivity, io.dsh.fusion.service.EngineService.ACTION_RESTART)
+                            render()
+                        }
+                        .setNegativeButton("稍后", null)
+                        .show()
+                }
+            }
+            .setNegativeButton("取消", null)
+            .show()
     }
 
     private fun removePlugin(name: String) {

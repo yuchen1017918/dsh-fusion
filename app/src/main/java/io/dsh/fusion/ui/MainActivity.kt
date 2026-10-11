@@ -234,11 +234,40 @@ class MainActivity : AppCompatActivity() {
                     // 「正在下载什么」比一句「启动中…」有用得多
                     val tail = FusionRuntime.supervisor().recentLines(1).firstOrNull()?.message
                     val detail = status.detail.ifBlank { "点下面的按钮启动，或先去「体检」看看环境。" }
-                    emptyBody.text = if (tail.isNullOrBlank()) detail else "$detail\n\n$tail"
-                    emptyAction.text = when (status.state) {
-                        EngineState.FAILED -> "重试"
-                        EngineState.STARTING, EngineState.DEGRADED -> "查看控制台"
-                        else -> "启动引擎"
+
+                    // 引擎起不来时，最大的嫌疑是插件 —— 坏插件能让整个 cordis
+                    // 装配挂在半路。桌面版正是在这一刻弹原生恢复对话框；
+                    // 我们既有常驻入口（设置页），这里再给一次直达引导。
+                    val thirdParty = if (status.state == EngineState.FAILED) {
+                        runCatching {
+                            FusionRuntime.provisioner().safeMode.diagnose().thirdPartyCount
+                        }.getOrDefault(0)
+                    } else {
+                        0
+                    }
+
+                    emptyBody.text = buildString {
+                        append(if (tail.isNullOrBlank()) detail else "$detail\n\n$tail")
+                        if (thirdParty > 0) {
+                            append("\n\n检测到 $thirdParty 个第三方插件 —— 引擎起不来时它们嫌疑最大。")
+                        }
+                    }
+
+                    // 失败且装了第三方插件时，主按钮直接给安全模式。
+                    // 不给「重试」：重试多半还是同样的失败，而用户不知道该改什么。
+                    // 注意文本与监听器必须一起设，否则会出现「写着重试、点了跳设置」。
+                    if (status.state == EngineState.FAILED && thirdParty > 0) {
+                        emptyAction.text = "进入安全模式"
+                        emptyAction.setOnClickListener {
+                            startActivity(Intent(this@MainActivity, SettingsActivity::class.java))
+                        }
+                    } else {
+                        emptyAction.text = when (status.state) {
+                            EngineState.FAILED -> "重试"
+                            EngineState.STARTING, EngineState.DEGRADED -> "查看控制台"
+                            else -> "启动引擎"
+                        }
+                        emptyAction.setOnClickListener { onEmptyAction() }
                     }
                 }
             }
