@@ -75,13 +75,19 @@
 
 | 模块 | 职责 | 关键文件 |
 |---|---|---|
-| `:engine` | 运行时内核：路径、引擎监督者、双后端、装配器、HTTP 桥、内核更新 | `EngineSupervisor.kt` `ProotLauncher.kt` `BridgeServer.kt` `provision/*` |
-| `:devicectl` | 设备控制：三通道 shell、无障碍、通知读取、22 个工具、设备体检 | `ShellChannel.kt` `AccessibilityBridge.kt` `DeviceTools.kt` `CompatDoctor.kt` |
-| `:voice` | 离线唤醒：模型管理 + Vosk 引擎 + 前台服务 | `VoiceModels.kt` `WakeWordEngine.kt` `WakeWordService.kt` |
-| `:overlay` | 悬浮球桌宠 + 流体云回复卡（全部 Canvas 绘制，零位图资源） | `PetView.kt` `CloudCapsuleView.kt` `FloatingBallService.kt` |
+| `:engine` | 运行时内核：路径、引擎监督者、双后端、装配器、HTTP 桥、内核更新、**安全模式** | `EngineSupervisor.kt` `ProotLauncher.kt` `BridgeServer.kt` `provision/*` `plugin/SafeMode.kt` |
+| `:devicectl` | 设备控制：三通道 shell、无障碍、通知读取、24 个工具、设备体检（18 项） | `ShellChannel.kt` `AccessibilityBridge.kt` `DeviceTools.kt` `CompatDoctor.kt` |
+| `:voice` | 离线唤醒：模型管理 + Vosk 引擎 + 前台服务（2 个工具） | `VoiceModels.kt` `WakeWordEngine.kt` `WakeWordService.kt` |
+| `:overlay` | 悬浮球桌宠 + 流体云回复卡（全部 Canvas 绘制，零位图资源；1 个工具） | `PetView.kt` `CloudCapsuleView.kt` `FloatingBallService.kt` |
 | `:app` | 界面壳：WebView 主界面、控制台、设置、体检、首启向导、前台服务 | `ui/*.kt` `service/EngineService.kt` `FusionApplication.kt` |
 | `tools/` | 运行时流水线、adb 通道、交付自检 | `build-runtime.py` `adb-androws.sh` `verify.sh` |
 | `assets/bridge-plugin/` | node 侧的能力桥插件（随 APK 发货） | `index.js` `cordis.patch.yml` |
+| `assets/plugins/` | **随包安装的本地插件**（首启铺进 profile 并注册进 bundles） | `dsh-mobile-layout/*` |
+| `plugins/` | 随包插件的**源码**（`assets/` 下那份是它的副本） | `dsh-mobile-layout/lib/client.js` |
+| `assets/host/` | 宿主脚本与 carrier | `fusion-host.mjs` `desktop-carrier.js` |
+
+> 三个工具模块合计 **27 个 `android_*` 工具**（设备 24 + 语音 2 + 悬浮球 1），
+> 全部经能力桥注册给引擎。
 
 ---
 
@@ -341,29 +347,35 @@ AGP 自带 `splits { abi { ... } }`，一次构建出两个 APK：
 
 ---
 
-## 十一、诚实的边界
+## 十一、形态定位与「桌面版架构」的真实障碍
 
-已经做到的，和还没做到的，分开写：
+### 先破一个混淆：「桌面版」不是「原生 UI 重写」
 
-**已完成并经过静态验证**
-- 四个核心模块 + app 全部编译通过，`assembleDebug` 产出 87 MB APK；
-- 双 ABI 的 ELF 依赖闭包 100% 自洽（`tools/verify.sh` 逐库检查 `DT_NEEDED`），内置 Node 确认 v24.18.0；
-- 独立包名 + 独立 RSA-4096 签名，自检确认不是 debug 证书；
-- 应用宝的 adb 通道已定位并打通到「等设备」这一步。
+DSH 官方的**桌面版本质上也是套壳**——Electron 加载官方 Web UI，preload 注入宿主能力，
+一行 UI 都没重写：
 
-**尚未在真机/虚拟机上跑通**
-- 端到端启动流程（需要一台 arm64 手机，或在应用宝内装好「ADB 调试助手」）；
-- Ubuntu rootfs 后端（首次使用需联网下载约 30 MB）、离线唤醒（需下载约 42 MB 模型）；
-- 内核 npm 安装（首次需下载数百 MB）。
+```
+apps/desktop/src/web-document.ts   → 提供 index 文档（官方 Web dist）
+apps/desktop/src/preload-app.ts    → 注入 dshDesktop carrier
+apps/desktop/src/host-process.ts   → 起一个 dsh-desktop-host 子进程
+```
 
-**已知风险**
-- `arm64` 设备上首次启动到引擎就绪预计 10–30 秒（PRoot 后端更慢，因为 syscall 翻译）；
-  内核安装那几个百 MB 是主要等待来源，进度会实时打到控制台；
-- 部分加固 ROM 会拦截 PRoot 的 ptrace，此时请用「原生直跑」后端。
+所以「套壳 vs 桌面版」这个说法本身是错位的。真实的选择是**三个独立的轴**：
+
+| 轴 | 选项 A | 选项 B | 本项目的判断 |
+|---|---|---|---|
+| **① UI 来源** | 官方 Web UI（WebView 渲染） | 原生 Kotlin 重写 | **永远 A** —— 重写等于放弃「跟随官方」，把项目从**适配层**变成**复刻层** |
+| **② 宿主形态** | 直连引擎（纯套壳） | 冒充桌面宿主（carrier + 代理 + polyfill） | **A 为主**，B 做成可开关实验（`experiment/desktop-architecture`） |
+| **③ 外围能力** | 全塞进 WebView | 原生实现（设置 / 体检 / 控制台 / 悬浮球 / 安全模式） | **B —— 最该投入**，因为这是「能不能用」而不是「好不好用」 |
+
+拿最近三件事对号入座就很清楚：
+
+- **移动端布局插件**（第十三节）属于**轴①的适配层**：让官方 UI 在手机上可用，**而不改官方源码**；
+- **安全模式**（第十二节）属于**轴③**：桌面版有它是因为 Electron 主进程是宿主，**不是因为桌面架构**；
+- **桌面架构实验分支**属于**轴②**：我在这上面花过 998 行，但它属于「好不好用」，
+  优先级低于轴③的「能不能用」——**这是我一次真实的优先级误判**。
 
 ---
-
-## 十一、形态定位与「桌面版架构」的真实障碍
 
 三种形态，差别不在「谁重写了 UI」，而在**宿主有没有满足官方客户端期待的宿主契约**。
 
@@ -415,21 +427,232 @@ WebView  ──同源请求──▶  127.0.0.1:<代理端口>  ──无 Origin
 完整拆解与实施蓝图见 [docs/DESKTOP-ARCH.md](docs/DESKTOP-ARCH.md)。
 实验性实现见分支 `experiment/desktop-architecture`。
 
-## 十二、诚实的边界（更新）
+## 十二、安全模式：插件把界面搞死之后的自救通道
+
+### 为什么必须有它
+
+插件跑在引擎进程里，一个坏插件能让整个 Web UI 起不来。
+而**恢复入口恰恰不能画在那个 UI 里 —— 页面挂了它一起挂**。
+
+| 形态 | 恢复入口在哪 | UI 挂了还能用吗 |
+|---|---|---|
+| 网页版 | 网页自己的插件管理页 | ✘ 页面挂了它一起挂 |
+| 桌面版 | Electron 主进程的原生 `messageBox` | ✔ 独立于网页 |
+| **本项目** | 原生设置页 / 控制台 / 通知 | ✔ **本来就是宿主，只是以前没做这个按钮** |
+
+顺带一个实测背景：开发机的 profile 里有 **50+ 个 `cordis.patch.yml.bak-*`、
+20+ 个 `package.json.bak-*`** —— 也就是说「备份 → 改 → 出问题回滚」这件事
+一直是**手工**在做的，做了七十多次。
+
+### 它到底改什么
+
+对齐官方 `packages/boot/app-boot/src/profile-sanitize.ts` 的语义，就两件事：
+
+1. 把 `cordis.patch.yml` 改名成带时间戳的备份 → 等价于「禁用全部插件补丁」
+2. 把 `package.json` 里的 `dsh.profile.bundles` 重置为**官方列表**
+
+**官方 web profile 的 bundles 只有两项**：`@deepseek-ai/dsh-base` 与
+`@deepseek-ai/dsh-web-app`。其余一切都是第三方——这就是「禁用所有插件」的准确定义。
+
+> **不删任何东西**，全部是改名或副本。恢复工具如果再毁一次数据，就没有下一步了。
+
+实现见 [`engine/.../plugin/SafeMode.kt`](engine/src/main/java/io/dsh/fusion/engine/plugin/SafeMode.kt)，
+行为由 [`SafeModeTest.kt`](engine/src/test/java/io/dsh/fusion/engine/plugin/SafeModeTest.kt)
+的 13 个用例钉住：不删任何文件、禁用后 bundles 恰好等于官方列表、还原能回到禁用前的状态。
+
+### 两个原生入口
+
+- **设置页「安全模式」卡片**：现状诊断（几个 bundle、几个第三方、补丁多大、几份备份）
+  + 禁用 + 备份列表 + 一键还原
+- **引擎启动失败时**，主界面按钮直接变成「进入安全模式」（而不是「重试」——
+  重试多半还是同样的失败，而用户不知道该改什么）
+
+### 比桌面版多做的
+
+| | 桌面版 | 本项目 |
+|---|---|---|
+| 入口时机 | 只在启动失败时弹一次 | 原生设置页**常驻** + 失败时引导 |
+| 备份可视化 | 只返回一个路径 | 列出全部备份 + 一键还原 |
+| 还原安全性 | — | 还原前先留 `bak-beforeRestore-*`，还原错了还能回头 |
+| 写清单 | — | **原子写**（临时文件 + 改名）：直接覆盖时断电会留下无法解析的清单，比插件坏掉更严重 |
+
+### 白屏探针：宿主才做得到的事
+
+插件坏掉最严重的表现不是布局错乱，而是**整页白屏** —— 那时页面里的 JS 可能压根没跑起来，
+所以**任何画在网页里的提示都不会出现**。
+
+`MainActivity` 在 `onPageFinished` 后每 2 秒探测官方 shell 锚点 `[data-shell-overlay]`，
+**24 秒仍无则弹原生对话框**引导进安全模式。措辞上刻意不判断原因（可能是 WebView 太老、
+内核起了一半、或插件）——**给出可做的动作比给一个判断有用**。
+
+---
+
+## 十三、随包的移动端布局插件
+
+### 为什么它必须随包
+
+官方 Web UI 是给桌面浏览器写的：手机上按钮太小、侧栏挤占宽度。本项目用一个
+**纯客户端 overlay 插件**把它改成移动布局——**不改官方源码一行**，所以官方升级不会覆盖它。
+
+这个插件是自研的，但它原本以 `pnpm add file:<本机路径>` 安装，而**那个源目录已经不存在了**，
+整个插件一度只剩开发机 profile 的 `node_modules` 里那一份。而 APK 的内核包是用官方包
+现装的，所以**设备上根本不会有它**。现在它随 APK 发货：
+
+```
+app/src/main/assets/plugins/dsh-mobile-layout/   → 首启装配时铺进 profile
+                                                  并注册进 dsh.profile.bundles
+```
+
+> **装了 ≠ 生效。** dsh 的插件要两处同时成立：文件在 `node_modules` 里，
+> **并且**包名在 `dsh.profile.bundles` 里。只做前者的话现象是
+> 「插件装了但一点效果都没有」——最难排查的一类。装配代码里 `registerBundle()`
+> 就是干这个的，自检也有一条断言盯着它。
+
+### 它做了什么
+
+- 三列网格锁定为「聊天占满」；侧栏收起时隐藏，左下角 ☰ 悬浮钮（44px）
+- 点 ☰ → 官方侧栏以 **fixed 280px 抽屉**滑入 + 半透明遮罩
+- 输入卡圆角收紧、安全区适配（刘海屏 / 手势条）
+
+**`always-mobile` 是刻意的选择**：任何视口都跑移动布局。Android 的视口宽度会随
+横屏、平板、分屏、系统字体缩放而变，一旦越过断点就会退回桌面布局——而用户明明在手机上。
+
+### v5 强化：只补纯增量
+
+开发机的版本（v4）是**实测可用**的，而表现层插件不该为了更好看去冒回归风险。
+所以对照社区插件后只补了两块纯增量：
+
+**① canary —— 让插件自己发现官方改版**
+
+这个插件 v1→v4 **每一次**都是被官方改版搞坏的，而每一次都是**人眼发现界面坏了**才修的：
+
+| 版本 | 被什么搞坏 |
+|---|---|
+| v1/v2 | 合成点击丢失 → 官方保持展开而 CSS 已锁 0 宽（**既没侧栏也没 FAB**） |
+| v3.2 | 第一个 grid item 消失导致串轨 → **Details 页整页泄漏** |
+| v4 | 官方 0.1.2 改 locale；0.2.0 右侧栏改 `absolute` → 面板盖住对话 |
+
+canary 的判据：**先健康过一轮**，之后连续 40 次 reconcile（约 10 秒）三列锚点全丢
+→ 判定漂移 → **移除自己注入的 CSS 与 DOM，交还官方布局**。
+
+这是 **fail-safe 而不是 fail-broken**：针对一个已不存在的 DOM 写的 CSS
+不是「部分可用」，而是有害的。两个刻意设计：**冷启动不计数**（shell 挂载了但列还没
+渲染完是正常的）与**短暂抖动不触发**（有一次布局闪断就自杀是灾难）。
+
+**② composer 触控与字号下限**
+
+- 输入框字号 **≥16px**：低于此值时移动端 WebView 聚焦会自动缩放，而且**不一定退回去**，
+  结果整页永久被放大
+- 触控目标 **≥44px**（WCAG 2.5.5）：只作用于 composer 行与抽屉，**不做全局规则**——
+  那会重排我们并不拥有的官方行
+
+### 与社区版的关系
+
+社区至少有五个同类插件，各自强调的正好点出本插件缺什么：
+
+| 社区插件 | 它强调的 |
+|---|---|
+| [`dsh-mobile-xc`](https://www.npmjs.com/package/dsh-mobile-xc) | **canary 防升级失效**、≤1023px 生效（v5 已借鉴前者） |
+| [`dsh-webui-mobile`](https://github.com/bbtssama/dsh-webui-mobile) | **mobile composer fixes**、composer 内图片上传（v5 借鉴前者） |
+| [`dsh-mobile-theme`](https://github.com/roojay/dsh-mobile-theme) | 右侧预览全屏、**touch-size controls**（v5 借鉴后者） |
+| [`@ddtcorex/dsh-maestro-mobile`](https://github.com/ddtcorex/dsh-maestro-mobile) | sheet 弹窗、safe-area |
+| [`NOirBRight/dsh-mobile`](https://github.com/NOirBRight/dsh-mobile) · [`lehhair/dsh-mobile`](https://github.com/lehhair/dsh-mobile) | 是 **Android 客户端 + Host 配对**，不是布局插件 |
+
+**没做的**（不是忘了，是往一个实测可用的插件里塞未验证的改动风险大于收益）：
+composer 内图片上传、sheet 弹窗、右侧预览全屏。
+
+源码在 [`plugins/dsh-mobile-layout/`](plugins/dsh-mobile-layout)，
+`history/` 里留着 v3/v4 时期的 `.bak`。
+
+---
+
+## 十四、测试与自检
+
+| 层 | 数量 | 覆盖什么 |
+|---|---|---|
+| Kotlin 单元测试 | **33** | 版本比较、镜像地址拼接、sha256、能力清单 JSON 契约、唤醒词编辑距离、**安全模式（13 个）** |
+| 插件行为测试 | **6** | canary：健康不触发、冷启动不误触发、漂移触发并自我卸载、幂等、抖动不触发 |
+| `tools/verify.sh` | **50 项** | 见下 |
+
+单测第一次运行就抓到一个真 bug：`KernelUpdater.compareVersions("0.2", "0.2.0")`
+返回 `-2`（应为 0）——数字段比完后错误地退回了字符串比较，会让升级页的版本排序抖动。
+
+自检里几条值得一提的断言，它们盯的都是**不报错、只是没效果**那一类故障：
+
+- **事件总线接线完整性**：每种 `FusionEvent` 都必须有生产者。`Reply` 曾经只有消费者
+  没有生产者，结果「流体云回复卡」永远不会触发且不报任何错
+- **APK 体积健康度**：对齐填充超过 8 MiB 就报错。踩过一次——超大 STORED 资源让
+  zip 写入器算错偏移，内容被物理写两遍，APK 从 107 涨到 129 MiB
+- **桥名两侧一致**：Kotlin 侧的 `JS_INTERFACE` 必须与 carrier 脚本里的名字相同。
+  不一致的表现是 carrier 找不到宿主后**静默 return**
+- **两条装配路径都铺随包插件**：内置包路径与在线安装路径都要铺，否则两条路会得到
+  两个不同的 App，而用户完全不知道差别从哪来
+
+```bash
+bash tools/verify.sh                                  # 交付自检
+gradle :engine:testDebugUnitTest :voice:testDebugUnitTest
+cd plugins/dsh-mobile-layout && node --test test/     # 插件行为测试
+```
+
+---
+
+## 十五、诚实的边界
 
 **已完成并经过静态验证**
-- 五个模块全部编译通过；`assembleDebug` 产出 107.55 MiB APK
-- 双 ABI 的 ELF 依赖闭包 100% 自洽；内置 Node 24.18.0、PRoot 5.1.107（含 loader）
-- 预装内核包：942 MB → 501 → 131 → **21.2 MB**，实测数据，脚本可复现
-- `verify.sh` 34 项自检（新增 APK 体积健康度，防 zip 对齐膨胀复发）
+
+- 五个模块全部编译通过；`assembleDebug` 产出约 108 MB APK
+- 双 ABI 的 ELF 依赖闭包 100% 自洽；内置 Node 24.18.0、PRoot 5.1.107（**含 loader**——
+  少了这两个文件容器后端基本是残废的）
+- 预装内核包：942 MB → 501 → 131 → **21.2 MB**，实测数据，脚本（`tools/build-kernel-bundle.py`）可复现
+- 随包移动端布局插件（462 行）+ canary 自我降级
+- 安全模式（285 行）+ 13 个单测 + 两个原生入口 + 白屏探针
+- `tools/verify.sh` **50 项**自检；33 个 Kotlin 单测 + 6 个插件行为测试
 - 独立包名 + 独立 RSA-4096 签名
 
 **尚未在真机验证**
-- 端到端启动（含内核包解压）—— 需要一台 arm64 手机
-- 解压实测耗时：131 MB / 约 3 万个文件，预估 30–90 秒（未在真机测过）
-- Ubuntu rootfs 后端、离线唤醒、官方插件安装页
-- 桌面版形态（`dshDesktop` carrier）—— 未实现
+
+> 这一条要说在前面：**至今没有任何一行运行期代码在真机上跑过。**
+> 下面全部是「写好了，逻辑上自洽，有静态与单元测试覆盖，但没跑过」。
+
+- 端到端启动（含内核包解压）：解压 131 MB / 约 3 万个文件，**预估** 30–90 秒，没测过
+- 移动端布局在真机 WebView 里的实际效果（抽屉、☰ 钮位置、输入框缩放）
+- 白屏探针会不会误报（24 秒的阈值是估的，真机冷启动可能更慢）
+- 流体云胶囊、确认闸、官方插件安装页、Ubuntu rootfs 后端、离线唤醒
+- 内核包在 arm64 上解压后能否真的把引擎拉起来
 
 **已知缺陷**
+
 - 流体云胶囊已接通（插件订阅 `session/event` → 桥 `/event` 端点），但未在真实会话中跑过
-- `replaceLegacyPackaging` + 超大 STORED 资源会触发 zipflinger 对齐膨胀（已在构建配置中规避，并在自检里加了断言）
+- `replaceLegacyPackaging` + 超大 STORED 资源会触发 zipflinger 对齐膨胀
+  （已在构建配置中规避，并在自检里加了断言）
+- **存储分区隔离做不到 Electron `partition` 的等价物**：Android WebView 的
+  Cookie 与 DOM Storage 都是进程级的。实验分支现用「一租约一 WebView + 释放即销毁」
+  做粗粒度隔离——若将来要跑互不信任的站点，这一条必须先解决
+
+**实验分支 `experiment/desktop-architecture` 的已知问题**
+
+它让 Android 版进入官方客户端的「桌面宿主」分支（拿到桌面级侧边栏浏览器）。
+不合并进主干的原因不是「做不到」，而是**它的失败模式不对等**——
+套壳版坏了坏一个面板，它坏了坏整个应用（代理在关键路径上）。
+
+- 代理的 **WebSocket 处理有 3 个真 bug**：`Connection: close` 无条件追加与
+  `Connection: Upgrade` 冲突；`firstOrNull` 只转发 1 个 `sec-websocket-*` 头，
+  而 `Sec-WebSocket-Key` 与 `Sec-WebSocket-Version` 两个都是必需的
+- 后果：`/api/remote.mux` 握手失败 → **整条实时通道挂掉 → 聊天界面不能用**
+- 8 个代理测试一个都没抓到，因为它们**全是手写 HTTP 请求，没有一条走 WebSocket**
+
+**要让它有价值，第一步是先修这 3 个 bug 并补上真正走 WebSocket 握手的测试。**
+
+---
+
+## 附：产物
+
+| 文件 | 体积 | 说明 |
+|---|---|---|
+| `app/build/outputs/apk/debug/app-debug.apk` | ~108 MB | 当前构建产物 |
+| `DSH-Fusion-v1.1-mobile.apk` | 107.7 MB | 含内核包 + 移动端布局 + 安全模式 |
+| `DSH-Fusion-v1.1-desktop-experiment.apk` | 107.7 MB | 桌面架构实验分支 |
+
+精简版（`-PwithKernelBundle=false`，约 87 MB）首启走在线安装，给 x86_64 预览版用。
+
+仓库：<https://github.com/yuchen1017918/dsh-fusion>
