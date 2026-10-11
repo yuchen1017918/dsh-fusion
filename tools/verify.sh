@@ -373,6 +373,51 @@ else
   warn "改端口后没有重启引擎的逻辑"
 fi
 
+# ---------------------------------------------------------------- 12. 凭据泄漏
+echo
+echo "── 12. 随包产物里不能有凭据 ───────────────────────────────"
+if command -v python3 >/dev/null 2>&1; then
+  KERNEL=$(ls "$ROOT/app/src/main/assets/kernel/"*.tar.xz 2>/dev/null | head -1)
+  if [ -n "$KERNEL" ]; then
+    python3 - "$KERNEL" <<'PYEOF'
+import sys, tarfile, posixpath
+# 只按**文件名**精确匹配。用宽松的路径正则（比如含 "token"）会把 typebox 的
+# tokenizer 源码全捞进来 —— 那是误报，会让人不再信任这条检查。
+BASENAMES = {".credentials.yaml", ".credentials.yml", ".credentials.json",
+             "credentials.json", "credentials.yaml", "id_rsa", "id_ed25519",
+             "id_ecdsa", ".netrc"}
+SUFFIXES = (".pem", ".pfx", ".p12", ".jks", ".keystore")
+hits = []
+total = 0
+with tarfile.open(sys.argv[1], "r:xz") as t:
+    for m in t:
+        total += 1
+        base = posixpath.basename(m.name)
+        if base in BASENAMES or base.startswith(".env") or base.lower().endswith(SUFFIXES):
+            hits.append(m.name)
+if hits:
+    print(f"\033[31m✘\033[0m 内核包里发现凭据类文件（{total} 条目中 {len(hits)} 个）：")
+    for h in hits[:10]:
+        print("     " + h)
+    sys.exit(1)
+print(f"\033[32m✔\033[0m 内核包无凭据类文件（{total} 条目）")
+PYEOF
+    if [ $? -eq 0 ]; then PASS=$((PASS+1)); else FAIL=$((FAIL+1)); fi
+  else
+    warn "找不到内核包，跳过"
+  fi
+  # APK 里也不该有：凭据是运行期在设备上生成的，进包就是泄漏
+  if [ -f "$APK" ]; then
+    if unzip -l "$APK" 2>/dev/null | grep -qiE "\.credentials|\.env$|id_rsa|\.pem$"; then
+      fail "APK 里疑似含凭据类文件"
+    else
+      pass "APK 无凭据类文件"
+    fi
+  fi
+else
+  warn "跳过（缺 python3）"
+fi
+
 # ---------------------------------------------------------------- 汇总
 echo
 echo "═══════════════════════════════════════════════════════════════"
