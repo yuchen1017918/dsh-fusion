@@ -44,7 +44,7 @@
 │  FusionPaths       │  ToolBus   │  Shizuku 通道       │             │  Vosk 离线唤醒      │
 │  EngineSupervisor  │            │  无障碍通道         │             │  悬浮球桌宠         │
 │  ProotLauncher     │            │  Root 通道          │             │  流体云回复卡       │
-│  Provisioner       │            │  22 个 android_* 工具│             │                    │
+│  Provisioner       │            │  27 个 android_* 工具│             │                    │
 │  BridgeServer      │            │  CompatDoctor 体检  │             │                    │
 │  KernelUpdater     │            │                    │             │                    │
 └────────┬───────────┘            └────────────────────┘             └────────────────────┘
@@ -213,7 +213,7 @@ tools/adb-androws.sh install
 
 ## 七、设备体检都查什么
 
-`CompatDoctor` 的 17 项，每一项都对应一个真实会让 DSH 在手机上死掉的阻塞点：
+`CompatDoctor` 的 18 项，每一项都对应一个真实会让 DSH 在手机上死掉的阻塞点：
 
 | 项 | 为什么查 |
 |---|---|

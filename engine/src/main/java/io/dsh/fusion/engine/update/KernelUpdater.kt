@@ -66,18 +66,37 @@ class KernelUpdater(
     companion object {
         private const val TAG = "更新"
 
-        /** 极简语义化版本比较（够用：只比数字段）。 */
+        /**
+         * 语义化版本比较。
+         *
+         * 三个坑，都是单测逼出来的：
+         *  1. **缺位要按 0 补**：`0.2` 与 `0.2.0` 是同一个版本，必须返回 0。
+         *     早先数字段比完就退回 `a.compareTo(b)`，那会给出 -2 —— 版本排序因此会抖。
+         *  2. **数字段要按数值比**：字符串序会认为 `0.9.0` > `0.10.0`。
+         *  3. **预发布标识更小**（semver 规则）：`0.2.0-rc.2` < `0.2.0`。
+         *     升级页据此把稳定版排在前面，排错了用户会升级到一个更旧的版本。
+         */
         fun compareVersions(a: String, b: String): Int {
-            fun parts(v: String): List<Int> =
-                v.split('-', '+').first().split('.').mapNotNull { it.toIntOrNull() }
-            val pa = parts(a)
-            val pb = parts(b)
+            fun core(v: String): String = v.split('-', '+').first()
+            fun prerelease(v: String): String? =
+                v.substringAfter('-', "").substringBefore('+').ifBlank { null }
+
+            val pa = core(a).split('.').mapNotNull { it.toIntOrNull() }
+            val pb = core(b).split('.').mapNotNull { it.toIntOrNull() }
             for (i in 0 until maxOf(pa.size, pb.size)) {
                 val x = pa.getOrElse(i) { 0 }
                 val y = pb.getOrElse(i) { 0 }
                 if (x != y) return x - y
             }
-            return a.compareTo(b)
+
+            val preA = prerelease(a)
+            val preB = prerelease(b)
+            return when {
+                preA == null && preB == null -> 0
+                preA == null -> 1        // 正式版 > 预发布版
+                preB == null -> -1
+                else -> preA.compareTo(preB)
+            }
         }
     }
 }

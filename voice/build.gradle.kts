@@ -11,8 +11,18 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
     kotlinOptions { jvmTarget = "17" }
+    testOptions {
+        unitTests {
+            // LogBus 会调 android.util.Log；纯 JVM 单测里它是桩，
+            // 不开这个开关会抛 "not mocked" —— 而我们要测的恰好是经过它的代码路径
+            isReturnDefaultValues = true
+        }
+    }
 }
 dependencies {
+    testImplementation("junit:junit:4.13.2")
+    // 用真的 org.json 覆盖 android.jar 里的桩，否则 JSON 断言全在空转
+    testImplementation("org.json:json:20240303")
     api(project(":engine"))
     implementation("androidx.core:core-ktx:1.13.1")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")

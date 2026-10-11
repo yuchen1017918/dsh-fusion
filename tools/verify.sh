@@ -153,9 +153,71 @@ grep -q 'DSH_FUSION_BRIDGE_TOKEN' "$ROOT/engine/src/main/java/io/dsh/fusion/engi
 grep -q 'PROOT_NO_SECCOMP' "$ROOT/engine/src/main/java/io/dsh/fusion/engine/runtime/RuntimeEnv.kt" && pass "PRoot: PROOT_NO_SECCOMP=1（Android 必需）" || fail "PRoot 未设 PROOT_NO_SECCOMP"
 grep -q 'android.accessibilityservice.AccessibilityService' "$MF" && pass "无障碍 intent-filter 正确" || warn "无障碍 intent-filter 可疑"
 
-# ---------------------------------------------------------------- 5. APK 体积健康度
+# ---------------------------------------------------------------- 5. 事件总线接线完整性
 echo
-echo "── 5. APK 体积健康度（防 zip 对齐膨胀）────────────────────"
+echo "── 5. 事件总线：每个事件都要有生产者 ─────────────────────"
+if command -v python3 >/dev/null 2>&1; then
+  python3 - "$ROOT" <<'PYEOF'
+import re, sys, pathlib
+root = pathlib.Path(sys.argv[1])
+src = root / "engine/src/main/java/io/dsh/fusion/engine/EventBus.kt"
+if not src.exists():
+    print("    \033[33m!\033[0m 找不到 EventBus.kt，跳过"); sys.exit(0)
+text = src.read_text(encoding="utf-8")
+# 抓 sealed class FusionEvent 里的每种事件： data class X(...) : FusionEvent()  或  object X : FusionEvent()
+names = re.findall(r"(?:data class|class|object)\s+(\w+)\s*(?:\([^)]*\))?\s*:\s*FusionEvent\b", text)
+if not names:
+    print("    \033[33m!\033[0m 没能从 EventBus.kt 解析出事件类型，跳过"); sys.exit(0)
+# 统计全工程的 emit 点
+kt = [p for p in root.rglob("*.kt") if "/build/" not in str(p)]
+emitters = {n: 0 for n in names}
+for p in kt:
+    body = p.read_text(encoding="utf-8", errors="replace")
+    for n in names:
+        emitters[n] += len(re.findall(r"emit\(\s*FusionEvent\." + n + r"\b", body))
+dead = [n for n, c in emitters.items() if c == 0]
+print(f"    事件类型 {len(names)} 种：" + "，".join(f"{n}={c}" for n, c in sorted(emitters.items())))
+# 这条断言是防一个具体的历史缺陷：FusionEvent.Reply 曾经只有消费者没有生产者，
+# 结果「流体云回复卡」这个卖点功能永远不会触发，而且不报任何错。
+if dead:
+    print(f"\033[31m✘\033[0m 以下事件有消费者却没有任何生产者（功能永远不触发）：{', '.join(dead)}")
+    sys.exit(1)
+print("\033[32m✔\033[0m 所有事件都有生产者")
+PYEOF
+  if [ $? -eq 0 ]; then PASS=$((PASS+1)); else FAIL=$((FAIL+1)); fi
+else
+  warn "跳过（缺 python3）"
+fi
+
+# ---------------------------------------------------------------- 6. 单元测试
+echo
+echo "── 6. 单元测试 ────────────────────────────────────────────"
+TEST_TOTAL=0; TEST_FAIL=0
+for m in engine voice; do
+  R="$ROOT/$m/build/test-results/testDebugUnitTest"
+  [ -d "$R" ] || continue
+  read -r t f <<<"$(python3 - "$R" <<'PYEOF'
+import glob, sys, xml.etree.ElementTree as ET
+t = f = 0
+for p in glob.glob(sys.argv[1] + "/*.xml"):
+    r = ET.parse(p).getroot()
+    t += int(r.get("tests", 0)); f += int(r.get("failures", 0)) + int(r.get("errors", 0))
+print(t, f)
+PYEOF
+)"
+  TEST_TOTAL=$((TEST_TOTAL + t)); TEST_FAIL=$((TEST_FAIL + f))
+done
+if [ "$TEST_TOTAL" -eq 0 ]; then
+  warn "没有测试结果（先跑 gradle :engine:testDebugUnitTest :voice:testDebugUnitTest）"
+elif [ "$TEST_FAIL" -gt 0 ]; then
+  fail "$TEST_TOTAL 个用例中有 $TEST_FAIL 个失败"
+else
+  pass "$TEST_TOTAL 个单元测试全部通过"
+fi
+
+# ---------------------------------------------------------------- 7. APK 体积健康度
+echo
+echo "── 7. APK 体积健康度（防 zip 对齐膨胀）────────────────────"
 if [ -f "$APK" ] && command -v python3 >/dev/null 2>&1; then
   python3 - "$APK" <<'PYEOF'
 import sys, os, zipfile

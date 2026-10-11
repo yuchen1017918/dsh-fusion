@@ -154,21 +154,54 @@ class CompatDoctor(
         )
     }
 
+    /** 目录占用（MB）。取不到返回 -1，界面会显示「—」而不是假装 0。 */
+    private fun dirMb(dir: java.io.File): Long {
+        if (!dir.exists()) return -1
+        var total = 0L
+        runCatching {
+            dir.walkTopDown().forEach { f -> if (f.isFile) total += f.length() }
+        }
+        return total / 1048576
+    }
+
     private fun storageCheck(): Finding {
         val stat = runCatching { StatFs(paths.root.absolutePath) }.getOrNull()
         val freeMb = stat?.let { it.availableBytes / 1024 / 1024 } ?: -1L
+
+        // 把「已经占了多少」和「还差多少」一起摊出来。
+        // 首启解压内核包要 190 MB 余量，用户需要知道这个数字从哪来。
+        val runtimeMb = dirMb(paths.runtimeDir)
+        val kernelMb = dirMb(paths.profileDir(FusionPaths.PROFILE_NAME))
+        val rootfsMb = dirMb(paths.rootfsDir)
+        val usedMb = dirMb(paths.root)
+
         val level = when {
             freeMb < 0 -> Level.WARN
             freeMb < 400 -> Level.BLOCK
             freeMb < 1200 -> Level.WARN
             else -> Level.OK
         }
+        val break_: String = "\n"
+        val usage = buildString {
+            append("应用已占 ${if (usedMb >= 0) "$usedMb MB" else "—"}")
+            if (kernelMb > 0) append("（内核树 $kernelMb MB") else append("（内核树 未装配")
+            if (runtimeMb > 0) append("，npm $runtimeMb MB") else append("，npm —")
+            if (rootfsMb > 0) append("，rootfs $rootfsMb MB")
+            append("）")
+        }
         return Finding(
             id = "storage",
             title = "可用存储",
             level = level,
-            detail = if (freeMb >= 0) "剩余 $freeMb MB（内核约 300 MB，Ubuntu rootfs 约 300 MB）" else "无法读取可用空间",
-            fix = if (level == Level.OK) null else "至少留 1.2 GB 再装内核与 rootfs",
+            detail = if (freeMb >= 0) {
+                "剩余 $freeMb MB" + break_ + usage
+            } else {
+                "无法读取可用空间" + break_ + usage
+            },
+            fix = when {
+                level == Level.OK -> null
+                else -> "首启解压内置内核需要约 190 MB 余量；再装 Ubuntu rootfs 还需约 300 MB"
+            },
         )
     }
 

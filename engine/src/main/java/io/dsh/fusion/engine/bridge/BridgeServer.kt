@@ -6,6 +6,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import org.json.JSONObject
 import java.io.BufferedInputStream
@@ -34,6 +36,16 @@ class BridgeServer(
 ) {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    /**
+     * 并发闸。
+     *
+     * 模型完全可能一口气并发调十几个设备工具（截屏 + 读屏 + 点击……），
+     * 而每个都可能起子进程。Android 的幻影进程杀手在子进程超阈值时会把整个
+     * 进程组静默杀掉 —— 所以这里必须有个上限，宁可让调用方排队或失败，
+     * 也不能让引擎被系统清理。
+     */
+    private val gate = Semaphore(MAX_CONCURRENT)
 
     @Volatile
     private var server: ServerSocket? = null
@@ -85,6 +97,7 @@ class BridgeServer(
                 val query = parseQuery(target.substringAfter('?', ""))
 
                 var contentLength = 0
+                var chunked = false
                 var presented: String? = null
                 while (true) {
                     val line = readLine(input) ?: break
@@ -95,12 +108,19 @@ class BridgeServer(
                     val value = line.substring(idx + 1).trim()
                     when (key) {
                         "content-length" -> contentLength = value.toIntOrNull() ?: 0
+                        // Node 的 fetch 会带 Content-Length，但 curl --data-binary @- 之类
+                        // 的客户端会用 chunked。手工排查时天天用 curl，所以必须支持。
+                        "transfer-encoding" -> if (value.contains("chunked", true)) chunked = true
                         "x-fusion-token" -> presented = value
                         "authorization" -> presented = value.removePrefix("Bearer").trim()
                     }
                 }
 
-                val bodyText = if (contentLength in 1..(8 shl 20)) readN(input, contentLength) else ""
+                val bodyText = when {
+                    chunked -> readChunked(input)
+                    contentLength in 1..MAX_BODY_BYTES -> readN(input, contentLength)
+                    else -> ""
+                }
                 val auth = presented ?: query["token"]
                 if (auth != token) {
                     LogBus.w(TAG, "拒绝 $method $path：token 不匹配")
@@ -109,11 +129,20 @@ class BridgeServer(
                 }
 
                 val body = if (bodyText.isBlank()) null else runCatching { JSONObject(bodyText) }.getOrNull()
+                // 超过并发上限就直接拒绝，不进队列：排队会让模型的等待时间不可预测，
+                // 而「现在不行」这种明确回答它反而好处理
+                if (gate.tryAcquire().not()) {
+                    LogBus.w(TAG, "$method $path 被拒：并发已达上限 $MAX_CONCURRENT")
+                    respond(s, 200, err("桥正忙（并发上限 $MAX_CONCURRENT），稍后重试"))
+                    return@use
+                }
                 val result = try {
-                    router(method, path, query, body)
+                    gate.withPermit { router(method, path, query, body) }
                 } catch (e: Exception) {
                     LogBus.e(TAG, "$method $path 失败: ${e.message}")
                     err(e.message ?: e.javaClass.simpleName)
+                } finally {
+                    gate.release()
                 }
                 respond(s, 200, result)
             } catch (e: Exception) {
@@ -153,6 +182,44 @@ class BridgeServer(
         }
     }
 
+    /**
+     * 读 chunked 请求体。
+     *
+     * 注意先收字节、最后一次性按 UTF-8 解码：如果逐块解码，
+     * 一个汉字被切在块边界上就会变成乱码 —— 而中文参数太常见了。
+     */
+    private fun readChunked(input: InputStream): String {
+        val buffer = java.io.ByteArrayOutputStream()
+        while (true) {
+            val sizeLine = readLine(input)?.trim() ?: break
+            if (sizeLine.isEmpty()) continue
+            val size = sizeLine.substringBefore(';').trim().toIntOrNull(16) ?: break
+            if (size <= 0) {
+                readLine(input) // 结束块后面的 CRLF
+                break
+            }
+            val chunk = readBytes(input, size)
+            buffer.write(chunk)
+            readLine(input) // 每个块后面的 CRLF
+            if (buffer.size() > MAX_BODY_BYTES) {
+                LogBus.w(TAG, "chunked 请求体超过上限 ${MAX_BODY_BYTES / 1048576} MB，已截断")
+                break
+            }
+        }
+        return String(buffer.toByteArray(), StandardCharsets.UTF_8)
+    }
+
+    private fun readBytes(input: InputStream, n: Int): ByteArray {
+        val buf = ByteArray(n)
+        var read = 0
+        while (read < n) {
+            val r = input.read(buf, read, n - read)
+            if (r <= 0) break
+            read += r
+        }
+        return if (read == n) buf else buf.copyOf(read)
+    }
+
     private fun readN(input: InputStream, n: Int): String {
         val buf = ByteArray(n)
         var read = 0
@@ -178,5 +245,11 @@ class BridgeServer(
 
     companion object {
         private const val TAG = "Bridge"
+
+        /** 同时处理的请求上限。见 gate 的注释：这个数字是给幻影进程杀手留的余量。 */
+        private const val MAX_CONCURRENT = 6
+
+        /** 请求体上限 8 MB（截图走响应体，不走请求体，所以不用给太大）。 */
+        private const val MAX_BODY_BYTES = 8 shl 20
     }
 }
