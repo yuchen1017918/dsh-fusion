@@ -74,6 +74,49 @@ class Provisioner(
     }
 
     /**
+     * 递归读一个 assets 目录下的全部文件（键为相对路径）。
+     *
+     * 随包插件是多层目录（lib/xxx.js），而 AssetManager 只能逐层 list，
+     * 所以这里自己走一遍。读不到不抛异常 —— 缺插件不该阻断装配。
+     */
+    fun assetFiles(dir: String): Map<String, ByteArray> {
+        val out = LinkedHashMap<String, ByteArray>()
+        fun walk(path: String) {
+            val children = runCatching { context.assets.list(path) }.getOrNull() ?: return
+            if (children.isEmpty()) {
+                runCatching {
+                    context.assets.open(path).use { out[path.removePrefix("$dir/")] = it.readBytes() }
+                }.onFailure { LogBus.w(TAG, "读 assets/$path 失败：${it.message}") }
+                return
+            }
+            children.forEach { walk("$path/$it") }
+        }
+        walk(dir)
+        return out
+    }
+
+    /**
+     * 铺随包的本地插件。
+     *
+     * 目前只有一个：**自研的移动端布局**。它不在 npm 上（无 author 无 repo），
+     * 而且实测它原来的源码目录已经不存在了 —— 整个插件一度只剩设备 profile 里
+     * node_modules 那一份。所以随包发货既是为了「装上就有移动布局」，
+     * 也是为了让它不再依赖任何一台机器的本地路径。
+     */
+    fun installBundledPlugins(onStep: ((String) -> Unit)? = null): Int {
+        var installed = 0
+        BUNDLED_PLUGINS.forEach { pkg ->
+            val files = assetFiles("plugins/$pkg")
+            if (files.isEmpty()) {
+                LogBus.w(TAG, "assets 里没有 plugins/$pkg —— 该插件不会被安装")
+                return@forEach
+            }
+            if (dsh.installLocalBundle(FusionPaths.PROFILE_NAME, pkg, files, onStep)) installed++
+        }
+        return installed
+    }
+
+    /**
      * 内核安装的唯一入口。
      *
      * 之所以收口到 Provisioner：只有它手里有 Context 能读 assets。
@@ -85,6 +128,11 @@ class Provisioner(
             supervisorMarkProvisioning("正在安装 dsh 内核 $version")
             try {
                 dsh.install(version, "web", onStep, bridgePluginFiles())
+                // 在线安装路径也要铺随包插件 —— 两条路径的最终状态必须一致，
+                // 否则「用内置包」和「走在线安装」会得到两个不同的 App，
+                // 而用户完全不知道差别从哪来
+                installBundledPlugins(onStep)
+                true
             } finally {
                 supervisorClearProvisioning()
             }
@@ -194,6 +242,7 @@ class Provisioner(
             when (outcome) {
                 is KernelBundleProvisioner.Outcome.Ready -> {
                     installHostScript()
+                    installBundledPlugins(onStep)
                     // 内置包里是**官方**内核，没有我们的能力桥插件 ——
                     // 不铺进去的话设备工具与流体云全是死的。这一步不能省。
                     onStep("装配设备能力桥…")
@@ -252,6 +301,9 @@ class Provisioner(
 
     private companion object {
         const val TAG = "装配"
+
+        /** 随包发货的本地插件（assets/plugins/<name>/ 下的目录名）。 */
+        val BUNDLED_PLUGINS = listOf("dsh-mobile-layout")
 
         /**
          * pnpm 的版本。

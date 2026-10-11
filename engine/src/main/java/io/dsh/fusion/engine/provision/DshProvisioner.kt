@@ -211,6 +211,95 @@ class DshProvisioner(
         LogBus.i(TAG, "能力桥插件铺好：${dir.absolutePath}（$copied 个文件 + tools.json）")
     }
 
+    /**
+     * 安装一个**随包的本地插件**。
+     *
+     * 为什么要走这条路而不是 `pnpm add`：这些插件不在 npm 上（比如我们自研的
+     * 移动端布局），而设备首启时也不该为了几个本地包去联网。做法与 `pnpm add file:`
+     * 等价 —— 铺到 `node_modules/<pkg>/` 再把它写进 `dsh.profile.bundles`。
+     *
+     * 关键点是 **bundles 必须一起改**：只铺文件不注册的话，cordis 根本不会加载它，
+     * 而现象是「插件装了但一点效果都没有」——最难排查的一类。
+     *
+     * @return 铺成功并已注册时为 true
+     */
+    fun installLocalBundle(
+        profileName: String,
+        pkg: String,
+        files: Map<String, ByteArray>,
+        onStep: ((String) -> Unit)? = null,
+    ): Boolean {
+        if (files.isEmpty()) {
+            LogBus.w(TAG, "本地插件 $pkg 没有任何文件可铺，跳过")
+            return false
+        }
+        val dir = File(paths.profileDir(profileName), "node_modules/$pkg")
+        var copied = 0
+        files.forEach { (relative, bytes) ->
+            runCatching {
+                val target = File(dir, relative)
+                target.parentFile?.mkdirs()
+                target.writeBytes(bytes)
+                copied++
+            }.onFailure { LogBus.w(TAG, "写 $pkg/$relative 失败：${it.message}") }
+        }
+        if (copied == 0) {
+            LogBus.e(TAG, "本地插件 $pkg 一个文件都没铺成功")
+            return false
+        }
+
+        val registered = registerBundle(profileName, pkg)
+        LogBus.i(
+            TAG,
+            "本地插件 $pkg 已铺 $copied 个文件" + if (registered) "，并已注册进 bundles" else "，但注册进 bundles 失败",
+        )
+        onStep?.invoke("已随包安装 $pkg（$copied 个文件）")
+        return registered
+    }
+
+    /**
+     * 把一个包名写进 `dsh.profile.bundles`（幂等）。
+     *
+     * 这是 dsh 的插件生效条件之一：**装了 ≠ 生效**，还要在 bundles 里挂上。
+     * 用户手工排查时经常卡在这里。
+     */
+    fun registerBundle(profileName: String, pkg: String): Boolean {
+        val manifest = File(paths.profileDir(profileName), "package.json")
+        if (!manifest.exists()) {
+            LogBus.w(TAG, "profile 清单不存在，无法注册 $pkg")
+            return false
+        }
+        return runCatching {
+            val obj = JSONObject(manifest.readText())
+            val dsh = obj.optJSONObject("dsh") ?: JSONObject().also { obj.put("dsh", it) }
+            val profile = dsh.optJSONObject("profile") ?: JSONObject().also { dsh.put("profile", it) }
+            val bundles = profile.optJSONArray("bundles") ?: org.json.JSONArray().also { profile.put("bundles", it) }
+            val existing = (0 until bundles.length()).map { bundles.getString(it) }
+            if (pkg in existing) {
+                LogBus.i(TAG, "$pkg 已在 bundles 里，无需重复注册")
+                return@runCatching true
+            }
+            bundles.put(pkg)
+            // 原子写：直接覆盖时写到一半断电会留下无法解析的清单，
+            // 那比插件没装更严重 —— 引擎会彻底起不来
+            val tmp = File(manifest.parentFile, "package.json.fusion-tmp")
+            tmp.writeText(obj.toString(2) + "\n")
+            if (!tmp.renameTo(manifest)) {
+                // renameTo 不覆盖已存在的目标，先删再试
+                manifest.delete()
+                if (!tmp.renameTo(manifest)) {
+                    tmp.delete()
+                    throw java.io.IOException("package.json 原子替换失败")
+                }
+            }
+            LogBus.i(TAG, "$pkg 已注册进 bundles（现共 ${bundles.length()} 项）")
+            true
+        }.getOrElse {
+            LogBus.e(TAG, "注册 $pkg 进 bundles 失败：${it.message}")
+            false
+        }
+    }
+
     /** 把能力总线上的工具导出成插件可同步读取的清单。 */
     fun writeToolManifest(dir: File = File(paths.profileDir("web"), "plugins/$BRIDGE_PKG")): Int {
         dir.mkdirs()

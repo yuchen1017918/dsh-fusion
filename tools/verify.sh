@@ -277,6 +277,59 @@ else
   warn "启动失败时没有引导到安全模式"
 fi
 
+# ---------------------------------------------------------------- 10. 随包插件
+echo
+echo "── 10. 随包插件（自研移动端布局）──────────────────────────"
+PLUG="$ROOT/app/src/main/assets/plugins/dsh-mobile-layout"
+if [ -d "$PLUG" ]; then
+  for f in package.json cordis.patch.yml lib/index.js lib/client.js; do
+    check_file "  $f" "$PLUG/$f"
+  done
+  # 它必须真的会被装配 —— 躺在 assets 里不装等于没有
+  if grep -q "installBundledPlugins" "$ROOT/engine/src/main/java/io/dsh/fusion/engine/Provisioner.kt"; then
+    pass "装配流程会安装随包插件"
+  else
+    fail "assets 里有插件但没有任何地方安装它"
+  fi
+  # 两条装配路径都要铺 —— 否则「内置包」和「在线安装」会得到两个不同的 App
+  N=$(grep -c "installBundledPlugins(onStep)" "$ROOT/engine/src/main/java/io/dsh/fusion/engine/Provisioner.kt")
+  if [ "$N" -ge 2 ]; then
+    pass "两条装配路径都铺随包插件（$N 处）"
+  else
+    fail "只有 $N 处调用 —— 另一条装配路径会漏装这个插件"
+  fi
+  # 装了还要注册进 bundles，否则 cordis 根本不加载（现象是「装了但没效果」）
+  if grep -q "registerBundle" "$ROOT/engine/src/main/java/io/dsh/fusion/engine/provision/DshProvisioner.kt"; then
+    pass "安装时会注册进 bundles"
+  else
+    fail "只铺文件不注册 —— 插件不会生效"
+  fi
+  # canary：v5 的核心行为，且它平时不做任何事，必须有测试兜着
+  if grep -q "CANARY_MISS_LIMIT" "$PLUG/lib/client.js"; then
+    pass "canary 已就位（官方 DOM 漂移时自我卸载）"
+  else
+    fail "client.js 里没有 canary —— 官方改版后只能靠人眼发现布局坏掉"
+  fi
+  CLIENT_NAME=$(grep -m1 -oE '"name": "[^"]+"' "$PLUG/package.json" | sed 's/.*"\(.*\)"/\1/')
+  if grep -q "$CLIENT_NAME" "$PLUG/lib/index.js" || grep -q "$CLIENT_NAME" "$PLUG/lib/client.js"; then
+    pass "包名两侧一致（$CLIENT_NAME）"
+  else
+    warn "包名 '$CLIENT_NAME' 在源码里找不到，可能未正确注册"
+  fi
+else
+  warn "没有随包插件（$PLUG 不存在）"
+fi
+
+if command -v node >/dev/null 2>&1 && [ -d "$ROOT/plugins/dsh-mobile-layout/test" ]; then
+  if (cd "$ROOT/plugins/dsh-mobile-layout" && node --test test/canary.test.mjs >/dev/null 2>&1); then
+    pass "移动端布局插件行为测试通过"
+  else
+    fail "移动端布局插件测试失败（cd plugins/dsh-mobile-layout && node --test test/）"
+  fi
+else
+  warn "跳过插件测试（缺 node 或测试目录）"
+fi
+
 # ---------------------------------------------------------------- 汇总
 echo
 echo "═══════════════════════════════════════════════════════════════"

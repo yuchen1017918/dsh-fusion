@@ -6,6 +6,8 @@ import android.graphics.Color
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
@@ -18,6 +20,7 @@ import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
 import io.dsh.fusion.engine.EngineState
@@ -45,6 +48,11 @@ class MainActivity : AppCompatActivity() {
     private lateinit var emptyAction: TextView
     private var loadedUrl: String? = null
     private var webViewWarningShown = false
+
+    // 白屏探针（见 startShellProbe 的注释）
+    private val probeHandler = Handler(Looper.getMainLooper())
+    private var shellProbeRunning = false
+    private var shellProbeAttempt = 0
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -172,9 +180,82 @@ class MainActivity : AppCompatActivity() {
             override fun onPageFinished(view: WebView?, url: String?) {
                 super.onPageFinished(view, url)
                 webView.visibility = View.VISIBLE
+                startShellProbe()
             }
         }
         warnIfOldWebView()
+    }
+
+    // ------------------------------------------------- 白屏探针（宿主才做得到的事）
+
+    /**
+     * 界面到底渲染出来了没有。
+     *
+     * 插件坏掉最严重的一种表现不是布局错乱，而是**整页白屏** ——
+     * 那时页面里的 JS 可能压根没跑起来，所以任何画在网页里的提示都不会出现。
+     * 只有宿主能在这个时刻说话，这正是原生宿主存在的意义之一。
+     * （桌面版为此在 Electron 主进程里做了 fatal-recovery 原生弹窗。）
+     *
+     * 探针锚点用的是官方 shell 自己的 `[data-shell-overlay]` ——
+     * 它存在，说明官方 UI 至少挂到了 shell 这一层。
+     */
+    private fun startShellProbe() {
+        if (shellProbeRunning) return
+        shellProbeRunning = true
+        shellProbeAttempt = 0
+        probeHandler.postDelayed(probeRunnable, SHELL_PROBE_INTERVAL_MS)
+    }
+
+    private val probeRunnable = object : Runnable {
+        override fun run() {
+            if (!shellProbeRunning) return
+            runCatching {
+                webView.evaluateJavascript(SHELL_PROBE_JS) { raw ->
+                    if (!shellProbeRunning) return@evaluateJavascript
+                    if (raw == "true") {
+                        shellProbeRunning = false
+                        LogBus.i(TAG, "界面骨架已渲染（第 ${shellProbeAttempt + 1} 次探测）")
+                        return@evaluateJavascript
+                    }
+                    shellProbeAttempt++
+                    if (shellProbeAttempt >= SHELL_PROBE_TRIES) {
+                        shellProbeRunning = false
+                        onShellMissing()
+                    } else {
+                        probeHandler.postDelayed(this, SHELL_PROBE_INTERVAL_MS)
+                    }
+                }
+            }.onFailure { shellProbeRunning = false }
+        }
+    }
+
+    /**
+     * 等了足够久还是没骨架 —— 给一条原生出路。
+     *
+     * 措辞上刻意不说「插件有问题」：我们并不知道原因（可能是 WebView 太老、
+     * 可能是内核起了一半、也可能是插件）。给出**可做的动作**比给一个判断有用。
+     */
+    private fun onShellMissing() {
+        if (isFinishing || isDestroyed) return
+        val third = runCatching { FusionRuntime.provisioner().safeMode.diagnose().thirdPartyCount }
+            .getOrDefault(0)
+        val seconds = SHELL_PROBE_TRIES * SHELL_PROBE_INTERVAL_MS / 1000
+        AlertDialog.Builder(this)
+            .setTitle("界面没有正常渲染")
+            .setMessage(
+                "等了 $seconds 秒也没看到界面骨架，页面可能是空白的。\n\n" +
+                    if (third > 0) {
+                        "检测到 $third 个第三方插件 —— 插件是最常见的原因。\n" +
+                            "可以先用安全模式把它们全部禁用（不会删除任何文件，之后能还原），再重启试试。"
+                    } else {
+                        "可以先到「控制台」看看引擎输出，或用「设备体检」排查环境。"
+                    },
+            )
+            .setPositiveButton("进入安全模式") { _, _ ->
+                startActivity(Intent(this@MainActivity, SettingsActivity::class.java))
+            }
+            .setNegativeButton("再等等", null)
+            .show()
     }
 
     /**
@@ -330,6 +411,14 @@ class MainActivity : AppCompatActivity() {
 
     companion object {
         private const val TAG = "主界面"
+
+        /** 白屏探针：每 2 秒探一次，共 12 次（约 24 秒）。 */
+        private const val SHELL_PROBE_TRIES = 12
+        private const val SHELL_PROBE_INTERVAL_MS = 2000L
+
+        /** 官方 shell 的锚点。用 try 包住：页面可能还没解析完。 */
+        private const val SHELL_PROBE_JS =
+            "(function(){try{return document.querySelector('[data-shell-overlay]')!==null}catch(e){return false}})()"
         private const val MATCH = ViewGroup.LayoutParams.MATCH_PARENT
         private const val WRAP = ViewGroup.LayoutParams.WRAP_CONTENT
     }

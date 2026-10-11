@@ -288,5 +288,14 @@ class SafeMode(
             "@deepseek-ai/dsh-base",
             "@deepseek-ai/dsh-web-app",
         )
+
+        /**
+         * 随包安装的**自有**插件 —— 安全模式禁用时会一并禁掉它们。
+         *
+         * 这只是给界面提示用的分类：它们同样是第三方（不在官方列表里），
+         * 但对用户来说「我自己随包带的」和「从市场装的」是两回事，
+         * 显示上区分开能少一次「怎么把自带的也禁了」的困惑。
+         */
+        val BUNDLED_PLUGINS = listOf("dsh-mobile-layout")
     }
 }
