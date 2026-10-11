@@ -6,6 +6,7 @@ import android.os.Build
 import android.os.StatFs
 import android.provider.Settings
 import io.dsh.fusion.engine.FusionPaths
+import io.dsh.fusion.engine.provision.KernelBundleProvisioner
 import io.dsh.fusion.engine.FusionSettings
 import io.dsh.fusion.engine.LogBus
 import io.dsh.fusion.engine.PhantomGuard
@@ -154,6 +155,8 @@ class CompatDoctor(
         )
     }
 
+    private fun kernelNeedMb0(bytes: Long): Int = (bytes / 1048576).toInt()
+
     /** 目录占用（MB）。取不到返回 -1，界面会显示「—」而不是假装 0。 */
     private fun dirMb(dir: java.io.File): Long {
         if (!dir.exists()) return -1
@@ -169,7 +172,15 @@ class CompatDoctor(
         val freeMb = stat?.let { it.availableBytes / 1024 / 1024 } ?: -1L
 
         // 把「已经占了多少」和「还差多少」一起摊出来。
-        // 首启解压内核包要 190 MB 余量，用户需要知道这个数字从哪来。
+        // 首启解压内核包的余量**动态算**，不写死。这个数字在三处文案里曾经
+        // 各写一个值（190 / 196 / 500）并且已经开始漂移 —— 而它取决于内核包的
+        // 实际体积，每次更新内核都会变。硬编码必然过期，只是过期的速度问题。
+        // 直接用 :engine 里的 KernelBundleProvisioner —— :devicectl 够不到 :app 的
+        // FusionRuntime，而这里只需要「读清单 + 算余量」这一件事
+        val kernelNeedMb: Int? = runCatching {
+            val provisioner = KernelBundleProvisioner(context, paths)
+            provisioner.find()?.let { kernelNeedMb0(provisioner.requiredBytes(it)) }
+        }.getOrNull()
         val runtimeMb = dirMb(paths.runtimeDir)
         val kernelMb = dirMb(paths.profileDir(FusionPaths.PROFILE_NAME))
         val rootfsMb = dirMb(paths.rootfsDir)
@@ -200,7 +211,9 @@ class CompatDoctor(
             },
             fix = when {
                 level == Level.OK -> null
-                else -> "首启解压内置内核需要约 190 MB 余量；再装 Ubuntu rootfs 还需约 300 MB"
+                else -> kernelNeedMb?.let {
+                    "首启解压内置内核需要约 $it MB 余量；再装 Ubuntu rootfs 还需约 300 MB"
+                } ?: "首启解压内置内核需要额外余量；再装 Ubuntu rootfs 还需约 300 MB"
             },
         )
     }

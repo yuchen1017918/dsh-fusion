@@ -288,6 +288,9 @@ def main() -> int:
         "registry": args.registry,
         "officeIncluded": args.keep_office,
         "rawMB": round(raw_mb, 1),
+        # 精确字节。下游（应用里的空间预检）要用它算「解压后 × 1.5」的余量，
+        # 而拿 prunedMB 反乘会引入舍入误差 —— 这条链上有三处文案曾经各写一个数。
+        "prunedBytes": int(pruned_mb * 1048576),
         "prunedMB": round(pruned_mb, 1),
         "tarballMB": round(size_mb, 1),
         "sha256": digest,
