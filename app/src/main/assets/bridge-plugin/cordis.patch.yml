@@ -1,0 +1,6 @@
+# DSH Fusion —— Android 能力桥。
+# 一个 bundle 行把宿主侧插件挂进来；工具清单由手机端在装配时写成 tools.json，
+# 插件启动时同步读取并按需注册，所以这里不需要任何编译期依赖。
+- insert:
+    - id: fusion-android-bridge
+      name: 'dsh-fusion-android-bridge'

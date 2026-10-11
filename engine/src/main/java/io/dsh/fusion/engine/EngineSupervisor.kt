@@ -1,0 +1,302 @@
+package io.dsh.fusion.engine
+
+import io.dsh.fusion.engine.runtime.ProcessRunner
+import io.dsh.fusion.engine.runtime.ProotLauncher
+import io.dsh.fusion.engine.runtime.RuntimeEnv
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
+import java.io.File
+import java.lang.Process
+import java.net.HttpURLConnection
+import java.net.InetAddress
+import java.net.ServerSocket
+import java.net.URL
+import java.util.concurrent.TimeUnit
+
+/**
+ * 引擎监督者 —— 融合体的心脏起搏器。
+ *
+ * 职责：
+ *  · 按 [EngineBackend] 组装启动命令（原生直跑 / PRoot Ubuntu 两种跑法共用同一份内核）；
+ *  · 从 stdout 里**嗅探出真实监听地址**（而不是赌某个写死的标志位），
+ *    因为 dsh 会自己挑端口并打印带 token 的 URL —— 这个 URL 才是 WebView 该加载的东西；
+ *  · 看门狗：进程掉了自动拉回，连续失败就停下并把原因摊开给用户看。
+ */
+class EngineSupervisor(
+    private val paths: FusionPaths,
+    private val settings: FusionSettings,
+) {
+
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val runner = ProcessRunner("引擎")
+    private val proot = ProotLauncher(paths)
+
+    private val _status = MutableStateFlow(EngineStatus(EngineState.IDLE, EngineBackend.BIONIC_NATIVE))
+    val status: StateFlow<EngineStatus> = _status
+
+    private var process: Process? = null
+    private var pumpJob: Job? = null
+    private var watchdogJob: Job? = null
+
+    @Volatile private var stopping = false
+
+    val url: String? get() = _status.value.url
+    val isRunning: Boolean get() = _status.value.running
+
+    // ------------------------------------------------------------------ 启动
+
+    suspend fun start(): EngineStatus {
+        if (_status.value.state == EngineState.RUNNING) return _status.value
+        return startInternal(settings.backend, _status.value.restarts)
+    }
+
+    private suspend fun startInternal(backend: EngineBackend, restarts: Int): EngineStatus {
+        stopping = false
+        paths.ensure()
+
+        if (!paths.runtimeSeeded()) {
+            return fail(backend, "运行时未就位：${paths.nodeBin.absolutePath} 不存在（ABI 必须是 arm64-v8a）")
+        }
+        if (!paths.dshInstalled()) {
+            return fail(backend, "dsh 内核还没装。先到「内核」页点一次安装。")
+        }
+        if (backend == EngineBackend.UBUNTU_PROOT && !proot.rootfsReady()) {
+            return fail(backend, "Ubuntu rootfs 未就绪。先到「运行时」页点一次装配。")
+        }
+
+        val port = pickPort(settings.preferredPort)
+        val command = buildCommand(backend, port)
+        _status.value = _status.value.copy(
+            state = EngineState.STARTING,
+            backend = backend,
+            port = port,
+            restarts = restarts,
+            detail = "正在拉起（${backend.label}）…",
+        )
+
+        // 显式标注类型：try/catch 作为表达式时若 catch 分支是 return，
+        // 编译器可能把整体推成 Any，后面 proc.pid() 就会以「Unresolved reference」的形式炸掉
+        val proc: Process = try {
+            runner.start(command, envFor(backend), paths.root)
+        } catch (e: Exception) {
+            return fail(backend, e.message ?: "进程启动失败")
+        }
+        process = proc
+
+        val seen = CompletableDeferred<String?>()
+        pumpJob = scope.launch {
+            runner.pump(proc) { line ->
+                URL_REGEX.find(line)?.let { match ->
+                    if (!seen.isCompleted) seen.complete(match.value)
+                }
+            }
+            if (!seen.isCompleted) seen.complete(null)
+        }
+
+        val url = withTimeoutOrNull(START_TIMEOUT_MS) { seen.await() }
+        if (url == null) {
+            return fail(
+                backend,
+                "启动超时（${START_TIMEOUT_MS / 1000}s）或进程提前退出，退出码=${runCatching { proc.exitValue() }.getOrNull()}",
+            )
+        }
+
+        _status.value = EngineStatus(
+            state = EngineState.RUNNING,
+            backend = backend,
+            port = port,
+            url = url,
+            pid = pidOf(proc),
+            since = System.currentTimeMillis(),
+            restarts = restarts,
+            detail = "已就绪 · ${backend.label}",
+        )
+        LogBus.i(TAG, "引擎就绪：$url（pid=${_status.value.pid}）")
+        startWatchdog()
+        return _status.value
+    }
+
+    // ------------------------------------------------------------------ 停止
+
+    suspend fun stop() {
+        stopping = true
+        watchdogJob?.cancel()
+        watchdogJob = null
+        val proc = process
+        process = null
+        if (proc != null) {
+            _status.value = _status.value.copy(state = EngineState.STOPPING, detail = "正在停止…")
+            runCatching { proc.destroy() }
+            val exited = withContext(Dispatchers.IO) { runCatching { proc.waitFor(5, TimeUnit.SECONDS) }.getOrDefault(false) }
+            if (!exited) runCatching { proc.destroyForcibly() }
+        }
+        pumpJob?.cancel()
+        pumpJob = null
+        _status.value = EngineStatus(EngineState.IDLE, settings.backend, detail = "已停止")
+        LogBus.i(TAG, "引擎已停止")
+    }
+
+    suspend fun restart(): EngineStatus {
+        stop()
+        delay(600)
+        return start()
+    }
+
+    /** 后端热切换：停掉当前引擎，用新后端拉起来（内核与数据都不动）。 */
+    suspend fun switchBackend(backend: EngineBackend): EngineStatus {
+        settings.backend = backend
+        LogBus.i(TAG, "切换后端 -> ${backend.label}")
+        return restart()
+    }
+
+    // ------------------------------------------------------------------ 看门狗
+
+    private fun startWatchdog() {
+        watchdogJob?.cancel()
+        if (!settings.watchdog) {
+            LogBus.i(TAG, "看门狗已关闭（设置里可开）")
+            return
+        }
+        watchdogJob = scope.launch {
+            var consecutive = 0
+            while (isActive) {
+                delay(WATCHDOG_INTERVAL_MS)
+                if (stopping) break
+                val proc = process ?: continue
+                if (!proc.isAlive) {
+                    consecutive++
+                    val restarts = _status.value.restarts + 1
+                    LogBus.w(TAG, "引擎进程不在了（第 $consecutive 次），尝试第 $restarts 次拉起")
+                    _status.value = _status.value.copy(
+                        state = EngineState.DEGRADED,
+                        restarts = restarts,
+                        detail = "掉线，正在第 $restarts 次重启…",
+                    )
+                    if (consecutive > MAX_WATCHDOG_RESTARTS) {
+                        _status.value = _status.value.copy(
+                            state = EngineState.FAILED,
+                            detail = "连续 $consecutive 次重启失败，已停下。看控制台日志定位原因。",
+                        )
+                        LogBus.e(TAG, "看门狗放弃：连续 $consecutive 次失败")
+                        break
+                    }
+                    startInternal(_status.value.backend, restarts)
+                } else {
+                    val port = _status.value.port
+                    if (port != null && !probe(port)) {
+                        LogBus.w(TAG, "端口 $port 无响应，但进程仍在 —— 继续观察")
+                    } else {
+                        consecutive = 0
+                    }
+                }
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------ 工具
+
+    private fun buildCommand(backend: EngineBackend, port: Int): List<String> {
+        // cordis 的 HMR / require-builtin 插件要求 --expose-internals；
+        // 这个标志只能走命令行，塞进 NODE_OPTIONS 是无效的。
+        val nodeFlags = if (settings.exposeInternals) listOf("--expose-internals") else emptyList()
+        val appArgs = listOf("web", "--port", port.toString(), "--host", "127.0.0.1")
+
+        return when (backend) {
+            EngineBackend.BIONIC_NATIVE ->
+                listOf(paths.nodeBin.absolutePath) + nodeFlags + listOf(paths.dshEntry.absolutePath) + appArgs
+
+            EngineBackend.UBUNTU_PROOT -> proot.command(
+                listOf("${ProotLauncher.Guest.BIONIC}/libnode.so") + nodeFlags + listOf(
+                    "${ProotLauncher.Guest.DSH}/lib/node_modules/@deepseek-ai/dsh/lib/bin.js",
+                ) + appArgs,
+                ProotLauncher.Guest.DSH_HOME,
+            )
+        }
+    }
+
+    private fun envFor(backend: EngineBackend): Map<String, String> {
+        // 桥的地址与 token 只能通过环境变量交给插件 —— 端口是启动时动态选的
+        val bridgeEnv = bridgeEnv()
+        val base = RuntimeEnv.base(paths, settings.npmRegistry, settings.heapMb, bridgeEnv)
+        return when (backend) {
+            EngineBackend.BIONIC_NATIVE -> base
+            // 客人视角的路径必须覆盖掉宿主视角，顺序不能反
+            EngineBackend.UBUNTU_PROOT -> base + RuntimeEnv.guest(paths)
+        }
+    }
+
+    /** 把回环桥的位置告诉 node 侧插件。 */
+    private fun bridgeEnv(): Map<String, String> {
+        val bridge = runCatching { FusionRuntime.bridge() }.getOrNull() ?: return emptyMap()
+        val port = settings.bridgePort
+        if (port <= 0) return emptyMap()
+        return mapOf(
+            "DSH_FUSION_BRIDGE_URL" to "http://127.0.0.1:$port",
+            "DSH_FUSION_BRIDGE_TOKEN" to settings.bridgeToken,
+        )
+    }
+
+    private fun pickPort(preferred: Int): Int {
+        for (offset in 0 until 40) {
+            val candidate = preferred + offset
+            if (isFree(candidate)) return candidate
+        }
+        return preferred
+    }
+
+    private fun isFree(port: Int): Boolean = runCatching {
+        ServerSocket(port, 1, InetAddress.getByName("127.0.0.1")).use { true }
+    }.getOrDefault(false)
+
+    fun probe(port: Int): Boolean = runCatching {
+        val conn = (URL("http://127.0.0.1:$port/").openConnection() as HttpURLConnection).apply {
+            connectTimeout = 2500
+            readTimeout = 2500
+            requestMethod = "GET"
+        }
+        val code = conn.responseCode
+        conn.disconnect()
+        code in 200..499
+    }.getOrDefault(false)
+
+    /**
+     * 取子进程 pid。
+     *
+     * 故意不写 `process.pid()`：这个方法的可见性在「Android 26+ 才有」和
+     * 「不同工具链下 Kotlin 是否解析得到」之间并不一致（本工程实测直接在编译期报
+     * Unresolved reference）。反射取一次最稳，拿不到就当没有 —— pid 只是给人看的。
+     */
+    private fun pidOf(process: Process): Long? = runCatching {
+        val method = process.javaClass.getMethod("pid")
+        (method.invoke(process) as? Number)?.toLong()
+    }.getOrNull()
+
+    private fun fail(backend: EngineBackend, detail: String): EngineStatus {
+        LogBus.e(TAG, detail)
+        _status.value = _status.value.copy(state = EngineState.FAILED, backend = backend, detail = detail)
+        return _status.value
+    }
+
+    /** 最近的引擎输出行，用于「流体云」胶囊与错误提示。 */
+    fun recentLines(limit: Int = 40): List<LogLine> =
+        LogBus.snapshot.value.takeLast(limit).filter { it.tag == "引擎" }
+
+    companion object {
+        private const val TAG = "引擎"
+        private const val START_TIMEOUT_MS = 180_000L
+        private const val WATCHDOG_INTERVAL_MS = 4_000L
+        private const val MAX_WATCHDOG_RESTARTS = 5
+
+        val URL_REGEX = Regex("""https?://(?:127\.0\.0\.1|localhost):\d+/?(?:\?token=[\w.\-]+)?""")
+    }
+}

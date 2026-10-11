@@ -1,0 +1,9 @@
+<resources>
+    <string name="app_name">DSH 融合版</string>
+    <string name="setup_title">首次装配</string>
+    <string name="console_title">引擎控制台</string>
+    <string name="settings_title">设置</string>
+    <string name="doctor_title">设备体检</string>
+    <string name="accessibility_label">DSH 融合版（手机操作）</string>
+    <string name="notification_listener_label">DSH 融合版（通知读取）</string>
+</resources>

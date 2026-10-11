@@ -1,0 +1,32 @@
+# ── 构建产物 ──────────────────────────────────────────────
+build/
+*/build/
+.gradle/
+.kotlin/
+local.properties
+
+# ── 运行时种子（由 tools/build-runtime.py 生成，不入库）──────
+# 理由：两个 ABI 合计 202 MB。入库存不进 GitHub（单文件与仓库体积双重限制），
+# 而且二进制进版本库就没法 review。生成脚本才是可复现的那一份。
+app/src/main/jniLibs/
+app/src/main/assets/runtime/npm-*.tgz
+app/src/main/assets/runtime/cert.pem
+app/src/main/assets/runtime/runtime-manifest.json
+
+# ── 中间产物与日志 ────────────────────────────────────────
+.build/
+*.log
+.adb-logs/
+
+# ── 签名材料（绝不入库）────────────────────────────────────
+keystore.properties
+*.jks
+*.keystore
+*.p12
+*.pem.key
+
+# ── 编辑器 / 系统 ─────────────────────────────────────────
+.idea/
+*.iml
+.DS_Store
+Thumbs.db
