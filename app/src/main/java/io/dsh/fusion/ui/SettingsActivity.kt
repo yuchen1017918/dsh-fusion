@@ -468,6 +468,97 @@ class SettingsActivity : AppCompatActivity() {
         return UiKit.row(this, title, desc, button)
     }
 
+    /**
+     * 监听端口。
+     *
+     * 放在设置页而不是只留在 SharedPreferences 里，是因为**端口冲突时用户最需要一个
+     * 能直接改的开关** —— 而这件事原来只能靠改配置文件，且失败信息只说「启动超时」，
+     * 用户根本联想不到是端口问题。
+     */
+    private fun portRow(): View {
+        val preferred = settings.preferredPort
+        val actual: Int? = FusionRuntime.supervisor().status.value.port
+        val desc = buildString {
+            append(if (preferred <= 0) "自动选择（系统分配）" else "指定 $preferred")
+            if (actual != null && actual > 0) append(" · 当前实际监听 $actual")
+            append("\n端口被占用会自动顺延或改用系统分配；默认最稳")
+        }
+        return UiKit.row(this, "监听端口", desc, UiKit.pill(this, "修改") { showPortDialog() })
+    }
+
+    private fun showPortDialog() {
+        val preferred = settings.preferredPort
+        val actual: Int? = FusionRuntime.supervisor().status.value.port
+        val presets = listOf(0, 7301, 8080, 9000)
+        val labels = presets.map { p ->
+            val name = if (p == 0) "自动选择（系统分配）" else p.toString()
+            if (p == preferred) "$name  ✓" else name
+        } + "自定义端口…"
+
+        AlertDialog.Builder(this)
+            .setTitle("监听端口")
+            .setMessage(
+                "当前实际监听：${if (actual != null && actual > 0) actual.toString() else "引擎未运行"}\n\n" +
+                    "**推荐用「自动选择」。** 它是唯一没有竞态的做法：先探测一个空闲端口、再把它交给引擎，" +
+                    "这两步之间别的进程完全可能抢走它 —— 而那时你只会看到「启动超时」，想不到是端口。\n\n" +
+                    "引擎只监听回环地址（127.0.0.1），局域网内其它设备访问不到，所以固定端口" +
+                    "主要是为了「可预测」（比如配合 adb 端口转发或抓包工具）时才有意义。",
+            )
+            .setItems(labels.toTypedArray()) { _, which ->
+                if (which < presets.size) applyPortChange(presets[which]) else askCustomPort()
+            }
+            .setNegativeButton("取消", null)
+            .show()
+    }
+
+    private fun askCustomPort() {
+        val input = android.widget.EditText(this).apply {
+            inputType = android.text.InputType.TYPE_CLASS_NUMBER
+            hint = "1024 – 65535"
+            setText(if (settings.preferredPort > 0) settings.preferredPort.toString() else "")
+            setPadding(UiKit.dp(this@SettingsActivity, 18f), UiKit.dp(this@SettingsActivity, 10f),
+                UiKit.dp(this@SettingsActivity, 18f), UiKit.dp(this@SettingsActivity, 6f))
+        }
+        AlertDialog.Builder(this)
+            .setTitle("自定义端口")
+            .setView(input)
+            .setMessage("填 0 表示自动选择。低于 1024 的端口普通应用绑不上。")
+            .setPositiveButton("确定") { _, _ ->
+                val value = input.text.toString().trim().toIntOrNull()
+                when {
+                    value == null -> Toast.makeText(this, "请填一个数字", Toast.LENGTH_SHORT).show()
+                    value == 0 -> applyPortChange(0)
+                    value < 1024 -> Toast.makeText(this, "低于 1024 的端口普通应用绑不上", Toast.LENGTH_LONG).show()
+                    value > 65535 -> Toast.makeText(this, "端口不能超过 65535", Toast.LENGTH_SHORT).show()
+                    else -> applyPortChange(value)
+                }
+            }
+            .setNegativeButton("取消", null)
+            .show()
+    }
+
+    /**
+     * 落盘并让改动生效。
+     *
+     * 引擎在跑时必须重启 —— 端口是启动参数，改了不重启等于没改，
+     * 而用户看到的是「设置保存了但没变化」，比报错更让人迷惑。
+     */
+    private fun applyPortChange(port: Int) {
+        val before = settings.preferredPort
+        settings.preferredPort = port
+        val running = FusionRuntime.supervisor().status.value.state ==
+            io.dsh.fusion.engine.EngineState.RUNNING
+        val label = if (port <= 0) "自动选择" else port.toString()
+        if (running && before != port) {
+            io.dsh.fusion.service.EngineService.start(this, io.dsh.fusion.service.EngineService.ACTION_RESTART)
+            Toast.makeText(this, "已设为 $label，正在重启引擎…", Toast.LENGTH_SHORT).show()
+        } else {
+            Toast.makeText(this, "已设为 $label", Toast.LENGTH_SHORT).show()
+        }
+        LogBus.i("设置", "监听端口：$before → $port（引擎${if (running) "运行中，已请求重启" else "未运行"}）")
+        render()
+    }
+
     private fun stepper(title: String, valueText: String, desc: String, onDelta: (Int) -> Unit): View {
         val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; setPadding(0, UiKit.dp(this@SettingsActivity, 8f), 0, UiKit.dp(this@SettingsActivity, 8f)) }
         val left = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }

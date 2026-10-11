@@ -251,7 +251,8 @@ check_file "SafeMode.kt" "$ROOT/engine/src/main/java/io/dsh/fusion/engine/plugin
 
 # 官方 bundles 必须是两项 —— 写错了「禁用所有插件」就会连官方内核一起禁掉，
 # 那会让引擎彻底起不来（比插件坏掉更严重）
-OFFICIAL=$(grep -c '"@deepseek-ai/dsh-' "$ROOT/engine/src/main/java/io/dsh/fusion/engine/plugin/SafeMode.kt" 2>/dev/null || echo 0)
+OFFICIAL=$(grep -c '"@deepseek-ai/dsh-' "$ROOT/engine/src/main/java/io/dsh/fusion/engine/plugin/SafeMode.kt" 2>/dev/null || true)
+OFFICIAL=${OFFICIAL:-0}
 if [ "$OFFICIAL" -ge 2 ]; then
   pass "官方 bundles 列表已硬编码（$OFFICIAL 项）"
 else
@@ -292,7 +293,8 @@ if [ -d "$PLUG" ]; then
     fail "assets 里有插件但没有任何地方安装它"
   fi
   # 两条装配路径都要铺 —— 否则「内置包」和「在线安装」会得到两个不同的 App
-  N=$(grep -c "installBundledPlugins(onStep)" "$ROOT/engine/src/main/java/io/dsh/fusion/engine/Provisioner.kt")
+  N=$(grep -c "installBundledPlugins(onStep)" "$ROOT/engine/src/main/java/io/dsh/fusion/engine/Provisioner.kt" || true)
+N=${N:-0}
   if [ "$N" -ge 2 ]; then
     pass "两条装配路径都铺随包插件（$N 处）"
   else
@@ -328,6 +330,47 @@ if command -v node >/dev/null 2>&1 && [ -d "$ROOT/plugins/dsh-mobile-layout/test
   fi
 else
   warn "跳过插件测试（缺 node 或测试目录）"
+fi
+
+# ---------------------------------------------------------------- 11. 端口选择
+echo
+echo "── 11. 端口选择（内核不会自己退让，责任全在这里）────────"
+check_file "PortPicker.kt" "$ROOT/engine/src/main/java/io/dsh/fusion/engine/runtime/PortPicker.kt"
+
+# 三条行为缺一不可：0 交给系统、指定端口顺延、整段被占退回 0
+if grep -q "OS_ASSIGNED = 0" "$ROOT/engine/src/main/java/io/dsh/fusion/engine/runtime/PortPicker.kt"; then
+  pass "支持「传 0 让操作系统分配」"
+else
+  fail "PortPicker 不支持传 0 —— 这是唯一没有竞态的路径"
+fi
+if grep -q "return OS_ASSIGNED" "$ROOT/engine/src/main/java/io/dsh/fusion/engine/runtime/PortPicker.kt"; then
+  pass "扫不到时退回 0（不硬闯已知被占用的端口）"
+else
+  fail "扫不到时可能返回一个已知被占用的端口 —— 那是静默的错误选择"
+fi
+
+# 必须是单一实现：EngineSupervisor 里如果又长出一份私有扫描逻辑，两边会漂移
+# grep -c 在「没找到」时会输出 0 **并且**以 1 退出，所以不能写 `|| echo 0`
+# ——那会追加第二个 0，变量变成 "0\n0"，后面的 [ -eq ] 直接报错。
+PRIV=$(grep -c "ServerSocket(port, 1" "$ROOT/engine/src/main/java/io/dsh/fusion/engine/EngineSupervisor.kt" 2>/dev/null || true)
+PRIV=${PRIV:-0}
+if [ "$PRIV" -eq 0 ]; then
+  pass "端口选择只有 PortPicker 一处实现"
+else
+  fail "EngineSupervisor 里还有一份私有端口探测（$PRIV 处）—— 两份实现会漂移"
+fi
+
+# 端口能在设置页改：冲突时用户最需要的就是一个能直接点的开关
+if grep -q "portRow" "$ROOT/app/src/main/java/io/dsh/fusion/ui/SettingsActivity.kt"; then
+  pass "设置页有端口入口"
+else
+  fail "端口只能靠改配置文件 —— 而冲突时用户根本不知道该改"
+fi
+# 改了要能生效：端口是启动参数，不重启引擎等于没改
+if grep -q "ACTION_RESTART" "$ROOT/app/src/main/java/io/dsh/fusion/ui/SettingsActivity.kt"; then
+  pass "改端口会重启引擎（否则「保存了但没变化」更迷惑）"
+else
+  warn "改端口后没有重启引擎的逻辑"
 fi
 
 # ---------------------------------------------------------------- 汇总
