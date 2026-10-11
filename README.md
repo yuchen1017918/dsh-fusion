@@ -21,7 +21,7 @@
 
 - **装完即用**：bionic Node 24.18 + PRoot 5.1.107 直接躺在 APK 里，首次打开不需要下载任何运行时；
 - **两条跑法**：同一个内核，既能在 bionic 上原生直跑（快、省内存），也能塞进 PRoot 的 Ubuntu rootfs 里跑（apt / gcc / python 全在）；
-- **模型的手**：22 个 `android_*` 工具，走无障碍（免授权）、Shizuku（免 root 系统 shell）、Root 三条通道，谁在用谁；
+- **模型的手**：27 个 `android_*` 工具，走无障碍（免授权）、Shizuku（免 root 系统 shell）、Root 三条通道，谁在用谁；
 - **看得见**：设备体检把十几个「会死人的地方」逐条摆出来，红的给按钮，黄的给指引。
 
 ---
@@ -319,8 +319,10 @@ settings put global settings_enable_monitor_phantom_procs false
 
 ## 十、APK 体积优化预案（完整版已落地）
 
-当前 87 MB 里有 202 MB 未被压缩的 `jniLibs`（两个 ABI 各 13 个 `.so`）。
-压缩后落在 APK 里约 80 MB，是主要体积来源。三条可选的路线，按推荐顺序：
+当前约 108 MB 里有 **220 MB 未被压缩的 `jniLibs`**（两个 ABI 各 17 个 `.so`：
+15 个我们的运行时——含 Node、ICU、PRoot 与两个 loader——加 2 个来自语音模块的
+`libvosk.so` / `libjnidispatch.so`）。压缩后落在 APK 里约 77 MB，是主要体积来源。
+三条可选的路线，按推荐顺序：
 
 **路线 A：ABI 拆包（推荐，改动最小）**
 AGP 自带 `splits { abi { ... } }`，一次构建出两个 APK：
