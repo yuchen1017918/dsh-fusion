@@ -363,42 +363,57 @@ AGP 自带 `splits { abi { ... } }`，一次构建出两个 APK：
 
 ---
 
-## 十一、形态定位：现在是什么、可以是什么
+## 十一、形态定位与「桌面版架构」的真实障碍
 
 三种形态，差别不在「谁重写了 UI」，而在**宿主有没有满足官方客户端期待的宿主契约**。
 
 | 形态 | 侧边栏浏览器 | 机制 |
 |---|---|---|
-| **网页版** | iframe 降级 | 无 `globalThis.dshDesktop` → 走 `IframeImpl` |
-| **桌面版**（Electron） | 真 Chromium 标签页 | 主进程注入 `dshDesktop`，走 `ElectronWebViewImpl` |
+| **网页版** | iframe 降级 | 无 `globalThis.dshDesktop.browser` → 走 `IframeImpl` |
+| **桌面版**（Electron） | 真 Chromium 标签页 | preload 注入完整 carrier → 走 `ElectronWebviewPresentation` |
 | **本项目的 Android 版（当前）** | iframe 降级 | WebView 加载官方 Web UI，**零注入** |
 
-`dshDesktop` 的判定在官方客户端里就三行（`ui-sidebar-browser/src/client/index.ts`）：
+### ⚠️ 障碍：后端同源闸 vs WebView 的能力边界
+
+桌面版能拿到桌面级能力，靠的是两项 **Electron 特权**：
+
+1. 文档从自定义协议 `dsh-app://app` 加载（而非 `http://127.0.0.1`）；
+2. 主进程可以**改写请求头**。
+
+而官方后端的同源闸是这样的：
 
 ```ts
-const carrier = globalThis.dshDesktop
-const desktop = carrier?.protocolVersion === 1 ? carrier.browser : undefined
-if (desktop === undefined) installFrames(ctx, () => createIframePage)   // 降级
-else installFrames(scope, … createElectronPage(options, desktop, …))    // 桌面级
+// packages/client/connection/src/api-request-trust.ts
+if (header(request.headers, 'sec-fetch-site') === 'cross-site') return false
+const origin = header(request.headers, 'origin')
+if (origin === undefined) return true
+try { return new URL(origin).host === hostUrl.host } catch { return false }
 ```
 
-而它背后的接口只有三个方法，且注释明确写着 *"no Electron objects or arbitrary IPC cross this
-interface"* —— 官方是**故意**把它设计成宿主无关的，就是留给非 Electron 宿主（比如 Android）用：
+**两道闸**：`Sec-Fetch-Site: cross-site` 直接拒；带 Origin 时 `origin.host` 必须严格等于 `Host` 头。
 
-```ts
-interface DesktopBrowserBridge {
-  acquire(workspace: string): Promise<DesktopBrowserReservation>
-  release(lease: DesktopBrowserLeaseId): Promise<void>
-  onOpenRequested(lease, listener: (url: string) => void): () => void
-}
+**Android WebView 没有等价能力** —— `shouldInterceptRequest` 只能改**响应**，改不了**请求头**。
+照搬桌面架构（把文档换个 origin）就会当场被这两道闸拒掉。
+
+**并且加白名单解决不了**：`trustedHosts` 校验的是 **Host 头**，Origin 栅栏与之独立。
+
+### 出路：官方留的口子
+
+第二行 `if (origin === undefined) return true` —— 注释也明写着
+*"Absent Origin is fine — the Host fence above already bound the request."*
+
+所以只要让 API 请求**不带 Origin 发出**即可。方案是**在本机起一个反向代理**：
+
+```
+WebView  ──同源请求──▶  127.0.0.1:<代理端口>  ──无 Origin 转发──▶  127.0.0.1:<引擎端口>
+         （文档也从这个代理加载，于是 API 是同源）
 ```
 
-**所以「改成桌面版形态」是可行的**：Kotlin 侧实现这三个方法 + 原生 WebView 承载浏览器页，
-再用 `addJavascriptInterface` + `evaluateJavascript` 把 carrier 注入进去。
-接口很小，工作量主要在宿主侧（WebView 生命周期、存储分区隔离、面板位置跟随）。
-**尚未实现** —— 未经真机验证的功能不做承诺，这是本项目的既定纪律。
+代理用普通 HTTP 客户端转发，**不会附加 Origin 与 Sec-Fetch-Site** → 两道闸都过。
+文档与 API 同在代理端口下，对浏览器而言还是同源。
 
----
+完整拆解与实施蓝图见 [docs/DESKTOP-ARCH.md](docs/DESKTOP-ARCH.md)。
+实验性实现见分支 `experiment/desktop-architecture`。
 
 ## 十二、诚实的边界（更新）
 

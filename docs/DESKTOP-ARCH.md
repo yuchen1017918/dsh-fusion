@@ -163,7 +163,33 @@ OkHttp（非浏览器客户端）默认不附加 `Origin` 与 `Sec-Fetch-Site` �
 
 ---
 
-## 六、为什么现在不做
+## 五点五、客户端到底要宿主给什么（契约全文）
+
+这是实施的关键：**桥只有三个方法，视图创建走的是别处**。追到底在 `ElectronWebviewPresentation`：
+
+```ts
+const element = document.createElement('webview')      // Electron 的 <webview> 标签
+element.setAttribute('name', reservation.lease)
+element.setAttribute('partition', reservation.partition)
+element.setAttribute('allowpopups', '')
+element.setAttribute('src', 'about:blank#' + reservation.lease)
+```
+
+元素 API（`WebviewElement` 接口）：
+
+```ts
+loadURL(url): Promise<void>   getURL(): string        getTitle(): string
+canGoBack(): boolean          canGoForward(): boolean clearHistory(): void
+goBack(): void                goForward(): void       reload(): void
+isLoading(): boolean
+```
+
+外加导航事件监听（`did-start-loading` / `did-stop-loading` / `did-navigate` / `page-title-updated` 一类）。
+
+**结论：Android 的实现路线是「宿主侧 polyfill `document.createElement('webview')`」**，
+把它桥接到原生 WebView。这样**不需要改一行官方客户端代码**，完全在宿主侧完成。
+
+
 
 1. **第 1 步就是未知数。** 同源闸能不能过，只有真机 + 真实 WebView 才能确认。
    在没确认之前写后面 700 行，是在赌一个未验证的前提。
