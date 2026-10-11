@@ -1,5 +1,6 @@
 package io.dsh.fusion.engine
 
+import io.dsh.fusion.engine.runtime.PortPicker
 import io.dsh.fusion.engine.runtime.ProcessRunner
 import io.dsh.fusion.engine.runtime.ProotLauncher
 import io.dsh.fusion.engine.runtime.RuntimeEnv
@@ -49,6 +50,9 @@ class EngineSupervisor(
     private var watchdogJob: Job? = null
 
     @Volatile private var stopping = false
+
+    /** 端口冲突只自动重试一次，避免在真实故障上反复重启。 */
+    private var portRetried = false
 
     val url: String? get() = _status.value.url
     val isRunning: Boolean get() = _status.value.running
@@ -105,11 +109,31 @@ class EngineSupervisor(
 
         val url = withTimeoutOrNull(START_TIMEOUT_MS) { seen.await() }
         if (url == null) {
+            val exitCode = runCatching { proc.exitValue() }.getOrNull()
+            // 端口冲突是最容易被误诊的一种失败：现象与「启动超时」一模一样，
+            // 但用户能做的事完全不同（换端口 vs 查依赖）。这里把它认出来。
+            val recent = recentLines(60).joinToString("\n") { it.message }
+            val portBusy = recent.contains("EADDRINUSE") || recent.contains("address already in use")
+            if (portBusy && port != 0 && !portRetried) {
+                LogBus.w(TAG, "端口 $port 被占用，改用系统分配端口重试一次")
+                portRetried = true
+                _status.value = _status.value.copy(
+                    state = EngineState.STARTING,
+                    detail = "端口 $port 被占用，正在换端口重试…",
+                )
+                return startInternal(backend, restarts)
+            }
             return fail(
                 backend,
-                "启动超时（${START_TIMEOUT_MS / 1000}s）或进程提前退出，退出码=${runCatching { proc.exitValue() }.getOrNull()}",
+                if (portBusy) {
+                    "端口 $port 被占用（EADDRINUSE）。同一台设备上可能有另一个 DSH 在跑，" +
+                        "或这个端口被别的应用占了。到「设置 → 引擎」把首选端口改成 0（自动选择）即可。"
+                } else {
+                    "启动超时（${START_TIMEOUT_MS / 1000}s）或进程提前退出，退出码=$exitCode"
+                },
             )
         }
+        portRetried = false
 
         _status.value = EngineStatus(
             state = EngineState.RUNNING,
@@ -314,17 +338,13 @@ class EngineSupervisor(
         )
     }
 
-    private fun pickPort(preferred: Int): Int {
-        for (offset in 0 until 40) {
-            val candidate = preferred + offset
-            if (isFree(candidate)) return candidate
-        }
-        return preferred
-    }
-
-    private fun isFree(port: Int): Boolean = runCatching {
-        ServerSocket(port, 1, InetAddress.getByName("127.0.0.1")).use { true }
-    }.getOrDefault(false)
+    /**
+     * 挑一个端口。实现在 [PortPicker]（那里有完整的三条行为说明，也便于单测）。
+     *
+     * 这里只做一件事：把 `preferred <= 0` 的语义透传下去 —— 返回 0 表示
+     * 「让操作系统在 listen 那一刻原子分配」，这是没有竞态的路径。
+     */
+    private fun pickPort(preferred: Int): Int = PortPicker.pick(preferred)
 
     fun probe(port: Int): Boolean = runCatching {
         val conn = (URL("http://127.0.0.1:$port/").openConnection() as HttpURLConnection).apply {
