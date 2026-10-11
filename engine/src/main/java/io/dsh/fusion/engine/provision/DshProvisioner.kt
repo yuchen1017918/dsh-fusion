@@ -90,15 +90,53 @@ class DshProvisioner(
         val file = File(dir, "package.json")
         file.writeText(pkg.toString(2))
         LogBus.i(TAG, "已写出 profile 清单 ${file.absolutePath}（内核 $version）")
+
+        /**
+         * pnpm 的工作区配置。
+         *
+         * 官方插件管理器会读它（见 plugin-manager/src/build-approval.ts），
+         * 缺了它官方那条路径的行为与「标准安装」不一致。
+         * `nodeLinker: hoisted` 让 pnpm 产出扁平 node_modules —— 与 npm 装出来的
+         * 形态一致，于是官方 pnpm 路径与应用内 npm 兜底路径可以混用而不打架。
+         */
+        File(dir, "pnpm-workspace.yaml").writeText(
+            """
+            |packages:
+            |  - .
+            |
+            |nodeLinker: hoisted
+            |autoInstallPeers: false
+            |
+            |# 这些包需要现场编译原生模块，Android 上做不到，忽略才是对的。
+            |# 显式写出来，pnpm 就不会把「按设计忽略」当成错误（否则退出码是 1）。
+            |ignoredBuiltDependencies:
+            |  - '@deepseek-ai/dsh-subprocess-local'
+            |  - '@google/genai'
+            |  - koffi
+            |  - node-pty
+            |  - protobufjs
+            """.trimMargin() + "\n"
+        )
+
+        // 让两条安装路径（官方 pnpm / 应用内兜底）都走同一个国内镜像
+        File(dir, ".npmrc").writeText("registry=${settings.npmRegistry}\n")
+        LogBus.i(TAG, "已写出 pnpm-workspace.yaml 与 .npmrc（registry=${settings.npmRegistry}）")
     }
 
     // ---------------------------------------------------------------- 安装
 
-    /** 安装/升级启动器 + profile 依赖。返回是否成功。 */
+    /**
+     * 安装/升级启动器 + profile 依赖。返回是否成功。
+     *
+     * @param bridgeFiles 桥插件文件（相对路径 -> 内容）。由调用方从 assets 读好传进来 ——
+     *   早先这里挂着一个可变的全局 `ASSET_READER`，谁都能改、生命周期说不清，
+     *   现在改成显式参数：文件从哪来，看调用点就知道。
+     */
     suspend fun install(
         version: String,
         profileName: String = "web",
         onStep: ((String) -> Unit)? = null,
+        bridgeFiles: Map<String, ByteArray> = emptyMap(),
     ): Boolean {
         paths.ensure()
         val npm = paths.npmCli
@@ -129,7 +167,7 @@ class DshProvisioner(
 
         onStep?.invoke("装配 web profile（bundle + 能力桥插件）…")
         writeProfile(profileName, version)
-        installBridgePlugin(profileName)
+        installBridgePlugin(profileName, bridgeFiles)
 
         LogBus.i(TAG, "安装 profile 依赖（这一步会拉几百 MB，耐心等）")
         val profileCode = runner.run(
@@ -156,17 +194,18 @@ class DshProvisioner(
      * 这一步是整个融合的接缝：手机端知道有哪些能力，模型端需要一张静态清单才能在
      * 同步的 apply() 里把它们注册成工具。中间不加任何构建期耦合。
      */
-    fun installBridgePlugin(profileName: String) {
+    fun installBridgePlugin(profileName: String, files: Map<String, ByteArray>) {
         val dir = File(paths.profileDir(profileName), "plugins/$BRIDGE_PKG")
         dir.mkdirs()
-        val assets = listOf("package.json", "index.js", "cordis.patch.yml", "README.md")
         var copied = 0
-        for (name in assets) {
+        files.forEach { (name, bytes) ->
             runCatching {
-                val bytes = ASSET_READER?.invoke("bridge-plugin/$name") ?: return@runCatching
                 File(dir, name).writeBytes(bytes)
                 copied++
-            }
+            }.onFailure { LogBus.w(TAG, "写入桥插件文件 $name 失败：${it.message}") }
+        }
+        if (copied == 0) {
+            LogBus.w(TAG, "没有拿到任何桥插件文件 —— 设备工具与流体云都不会生效，请检查 assets/bridge-plugin")
         }
         writeToolManifest(dir)
         LogBus.i(TAG, "能力桥插件铺好：${dir.absolutePath}（$copied 个文件 + tools.json）")
@@ -195,7 +234,7 @@ class DshProvisioner(
         const val BRIDGE_PKG = "dsh-fusion-android-bridge"
         const val FALLBACK = "0.2.0-rc.2"
 
-        /** 由 app 模块注入 assets 读取器，避免 engine 依赖 Android Context。 */
-        var ASSET_READER: ((String) -> ByteArray?)? = null
+        /** 桥插件需要铺进 profile 的文件清单。 */
+        val BRIDGE_FILES = listOf("package.json", "index.js", "cordis.patch.yml", "README.md")
     }
 }

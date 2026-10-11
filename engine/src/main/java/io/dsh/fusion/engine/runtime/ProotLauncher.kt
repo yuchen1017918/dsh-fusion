@@ -19,6 +19,7 @@ class ProotLauncher(private val paths: FusionPaths) {
         const val DSH_HOME = "/root/.dsh"
         const val TMP = "/tmp"
         const val CACHE = "/opt/cache"
+        const val HOST = "/opt/host"
     }
 
     fun command(guestArgv: List<String>, workDir: String = Guest.HOME): List<String> {
@@ -38,6 +39,9 @@ class ProotLauncher(private val paths: FusionPaths) {
         bind(args, paths.dshHome.absolutePath, Guest.DSH_HOME)
         bind(args, paths.tmpDir.absolutePath, Guest.TMP)
         bind(args, paths.cacheDir.absolutePath, Guest.CACHE)
+        // 宿主脚本与 pnpm 的家目录也要可见，否则容器后端下插件安装无处可写
+        bind(args, paths.hostDir.absolutePath, Guest.HOST)
+        bind(args, paths.pnpmHome.absolutePath, "${Guest.CACHE}/pnpm")
 
         args += guestArgv
         return args

@@ -172,12 +172,6 @@ object UiKit {
         layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(context, 1f))
     }
 
-    fun levelColor(level: String): Int = when (level) {
-        "OK" -> ACCENT
-        "WARN" -> WARN
-        else -> DANGER
-    }
-
     fun withAlpha(color: Int, alpha: Int): Int =
         (color and 0x00FFFFFF) or (alpha.coerceIn(0, 255) shl 24)
 

@@ -48,8 +48,49 @@ class FusionPaths(context: Context) {
     /** PRoot 5.1（同样是伪装成 .so 的可执行文件） */
     val prootBin: File get() = File(nativeDir, "libproot.so")
 
-    /** dsh 启动器入口 */
-    val dshEntry: File get() = File(prefixDir, "lib/node_modules/@deepseek-ai/dsh/lib/bin.js")
+    /**
+     * dsh 启动器的入口。
+     *
+     * 两种布局都要认：
+     *  · **预打包布局**（首选）：内核包解开后，dsh 就是 profile 的一个依赖，
+     *    整棵树只有一份 node_modules —— 实测 942 MB → 501 MB，去重省了 441 MB；
+     *  · **npm 安装布局**（回退）：`npm -g --prefix` 装出来的全局布局。
+     */
+    val dshEntry: File
+        get() = firstExisting(
+            File(profileDir(PROFILE_NAME), "node_modules/@deepseek-ai/dsh/lib/bin.js"),
+            File(prefixDir, "lib/node_modules/@deepseek-ai/dsh/lib/bin.js"),
+        )
+
+    /** dsh 包根目录（宿主脚本要从这里找 profile-boot chunk）。 */
+    val dshDir: File
+        get() = firstExisting(
+            File(profileDir(PROFILE_NAME), "node_modules/@deepseek-ai/dsh"),
+            File(prefixDir, "lib/node_modules/@deepseek-ai/dsh"),
+        )
+
+    /**
+     * pnpm 的入口脚本。
+     *
+     * 官方插件安装器底层跑的是 `pnpm`，而 Android 上没法把一个叫 pnpm 的可执行文件
+     * 放进 PATH（W^X + jniLibs 只认 lib*.so）。所以官方留了 ProfileContext.packageManager
+     * 让打包应用直接指定 `command + args` —— 我们用包内的 node 去跑这个 .cjs。
+     */
+    val pnpmEntry: File
+        get() = firstExisting(
+            File(profileDir(PROFILE_NAME), "node_modules/pnpm/bin/pnpm.cjs"),
+            File(prefixDir, "lib/node_modules/pnpm/bin/pnpm.cjs"),
+        )
+
+    /** 宿主脚本目录与文件（我们自己的启动入口，见 assets/host/fusion-host.mjs）。 */
+    val hostDir = File(root, "host")
+    val hostScript: File get() = File(hostDir, "fusion-host.mjs")
+
+    /** pnpm 的家目录与 store（必须落在应用私有目录内，否则它去写 /root 会失败）。 */
+    val pnpmHome = File(root, "pnpm")
+    val xdgCache = File(root, "xdg-cache")
+    val xdgData = File(root, "xdg-data")
+    val xdgConfig = File(root, "xdg-config")
 
     /** npm CLI 入口 */
     val npmCli: File get() = File(npmDir, "bin/npm-cli.js")
@@ -65,7 +106,10 @@ class FusionPaths(context: Context) {
 
     /** 幂等建目录 */
     fun ensure() {
-        listOf(root, dshHome, profilesDir, runtimeDir, prefixDir, rootfsDir, logsDir, tmpDir, cacheDir)
+        listOf(
+            root, dshHome, profilesDir, runtimeDir, prefixDir, rootfsDir, logsDir, tmpDir, cacheDir,
+            hostDir, pnpmHome, xdgCache, xdgData, xdgConfig,
+        )
             .forEach { if (!it.exists()) it.mkdirs() }
     }
 
@@ -75,7 +119,25 @@ class FusionPaths(context: Context) {
     /** dsh 启动器是否已安装 */
     fun dshInstalled(): Boolean = dshEntry.exists()
 
+    /** 宿主脚本是否就位（决定引擎走自建入口还是官方 CLI）。 */
+    fun hostReady(): Boolean = hostScript.exists()
+
+    /** pnpm 是否就位（决定官方插件安装页能不能用）。 */
+    fun pnpmReady(): Boolean = pnpmEntry.exists()
+
     fun profileDir(name: String): File = File(profilesDir, name)
+
+    /** 取第一个存在的；都不存在就返回第一个（调用方会在别处报「不存在」）。 */
+    private fun firstExisting(vararg candidates: File): File =
+        candidates.firstOrNull { it.exists() } ?: candidates.first()
+
+    companion object {
+        /** 本应用只用 web profile，集中一处免得散落各文件里各写各的。 */
+        const val PROFILE_NAME = "web"
+
+        /** 内置内核包的标记文件名（解压成功的凭据）。 */
+        const val KERNEL_MARKER = ".fusion-kernel.json"
+    }
 
     fun describe(): Map<String, String> = linkedMapOf(
         "root" to root.absolutePath,
@@ -84,6 +146,8 @@ class FusionPaths(context: Context) {
         "node" to "${nodeBin.absolutePath} (exists=${nodeBin.exists()}, size=${if (nodeBin.exists()) nodeBin.length() else 0})",
         "proot" to "${prootBin.absolutePath} (exists=${prootBin.exists()})",
         "dshEntry" to "${dshEntry.absolutePath} (exists=${dshEntry.exists()})",
+        "hostScript" to "${hostScript.absolutePath} (exists=${hostScript.exists()})",
+        "pnpmEntry" to "${pnpmEntry.absolutePath} (exists=${pnpmEntry.exists()})",
         "rootfs" to "${rootfsDir.absolutePath} (ready=${File(rootfsDir, "etc/os-release").exists()})",
     )
 }

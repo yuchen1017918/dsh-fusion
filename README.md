@@ -9,7 +9,7 @@
 | 版本 | 1.0.0 (versionCode 1) |
 | 支持 | Android 8.0+（minSdk 26）/ targetSdk 34 / compileSdk 35 |
 | ABI | `arm64-v8a`（真机）· `x86_64`（应用宝电脑版、x86 模拟器） |
-| 产物 | `app/build/outputs/apk/debug/app-debug.apk`（约 87 MB，含两套内置运行时） |
+| 产物 | `app/build/outputs/apk/debug/app-debug.apk`（约 108 MB，含两套运行时 + 预装内核） |
 | 签名 | `keystore/dsh-fusion.jks`，SHA-256 `55:F3:AF:65:08:81:90:35:CE:F0:DF:F6:0F:F0:97:10:D2:91:A6:13:A2:16:BB:BE:B7:9C:22:E0:BF:F5:83:AB` |
 
 ---
@@ -254,32 +254,64 @@ settings put global settings_enable_monitor_phantom_procs false
 
 ---
 
-## 九、首次启动要下载什么（别以为它卡死了）
+## 九、装完就能用（预装内核包）
 
-**内置运行时（Node 24.18 + PRoot 5.1.107）已随 APK 提供，一个字节都不用下载。**
-但官方内核与两个可选组件要联网取，而且体积不小 —— 这是首次启动「看起来没反应」的唯一原因。
+**这个版本不需要联网装配。** 官方内核已经随 APK 发货，首次启动只做一次本地解压。
 
-| 项目 | 体积 | 触发时机 | 必选？ | 在哪看进度 |
-|---|---|---|---|---|
-| `@deepseek-ai/dsh` 内核 + web profile | **数百 MB**（取决于插件数量） | 首启向导点「开始装配」 | ✅ 必须 | 首启向导 / 控制台页 |
-| Ubuntu rootfs（`ubuntu-base-22.04.5`） | **约 30 MB**（展开约 300 MB） | 设置 → 下载与内核 → 「装配」 | ⭕ 可选 | 设置页 / 控制台页 |
-| 离线唤醒模型（Vosk 中文小型） | **约 42 MB** | 设置 → 语音 → 「下载」 | ⭕ 可选 | 设置页 / 控制台页 |
-| 语音识别 | 0（本地推理） | 唤醒开启后 | — | 控制台页 |
+### 内核包是怎么来的
 
-要点：
+`tools/build-kernel-bundle.py` 在构建期把官方内核预装好、裁干净、压成一个包：
 
-- 三项全部是**一次下载、之后永久离线**，装完断网也能用；
-- 全程进度实时打在「控制台」页 —— **只要还在滚字就是正常的**，界面没有假死；
-- 下载中断可重来，npm 的缓存目录会复用，不会从零开始；
-- 内核与 rootfs 都走国内镜像（npm 走 npmmirror，rootfs 走清华/中科大/cdimage 三源轮询），
-  断源会自动换下一个，并带断点续传与 sha256 校验。
+| 阶段 | 体积 | 说明 |
+|---|---|---|
+| 双树安装（原来应用首启干的事） | 942 MB | 启动器一套 + profile 一套，**重复** |
+| 单树安装（启动器变成 profile 依赖） | 501 MB | pnpm 去重，省 441 MB |
+| 裁剪后 | **131 MB** | 砍掉 3 类用不上的东西 |
+| **xz -6 压缩** | **21.2 MB** | 进 APK 的最终体积 |
 
-粗算一台手机从点击安装到能对话：**下载时间取决于网速，本地处理约 1–3 分钟**
-（解包 rootfs / 解包 npm / 首次启动 V8 与插件树）。
+裁剪明细（每一步都有理由，报告会打印出来）：
 
----
+| 剔除项 | 体积 | 为什么 |
+|---|---|---|
+| LibreOffice wasm（`soffice.wasm` + `.data`） | 145 MB | 文档转换能力。手机跑 122 MB 的 wasm LibreOffice 意义有限，且它是超 GitHub 单文件硬限制的元凶。要保留加 `--keep-office` |
+| sourcemap / `.d.ts` | 81 MB | 运行期完全不需要 |
+| 外平台原生库（linux-x64 / win32 / darwin） | 70 MB | Android 是 arm64/x86_64 bionic，这些一个都加载不了 |
+| 文档 / 示例 / Windows 二进制 | 12 MB | 用不上 |
 
-## 十、APK 体积优化预案（尚未实施）
+包里含：`@deepseek-ai/dsh`、`dsh-base`、`dsh-web-app`，**以及 pnpm** —— 官方插件安装页底层就是 pnpm，不带的话用户解完包插件页依然点不动。
+
+### 首次启动会发生什么
+
+1. 检查 `files/fusion/profiles/web` 是否已就位（标记文件 + 关键路径抽查，两者都过才认）；
+2. 不够就先查空间（需要约 190 MB 余量，不够会明确告知差多少）；
+3. 解压到临时目录，**完成后原子改名**就位 —— 中途被杀不会留下半残的 profile；
+4. 铺入我们自己的能力桥插件（官方内核里没有它，设备工具与流体云全靠它）；
+5. 起引擎。
+
+向导页会显示进度条与「正在初始化本地环境，预计需要 30 秒到 1 分钟，请勿关闭应用」。
+
+**判断有没有卡死**：切到「控制台」页，日志在滚就是正常。装完之后**完全不需要联网**，飞行模式下也能启动。
+
+### 两个版本
+
+| 版本 | 构建命令 | 体积 | 首启 |
+|---|---|---|---|
+| **完整版**（推荐） | `gradle :app:assembleDebug` | ≈108 MB | 本地解压，零联网 |
+| 精简版 | `gradle :app:assembleDebug -PwithKernelBundle=false` | ≈87 MB | 联网 npm 安装（数百 MB） |
+
+精简版是给 **x86_64 预览版（应用宝电脑版）** 用的：内核包是按 arm64 Android 裁的，
+塞给 x86_64 反而装不上。所以那种场合刻意不带。
+
+### 仍然需要联网的（可选）
+
+| 项目 | 体积 | 什么时候 |
+|---|---|---|
+| Ubuntu rootfs | 约 30 MB | 想用「Ubuntu 容器」后端时 |
+| 离线语音唤醒模型 | 约 42 MB | 想用语音唤醒时 |
+
+这两个都是可选的，不做也能正常对话。
+
+## 十、APK 体积优化预案（完整版已落地）
 
 当前 87 MB 里有 202 MB 未被压缩的 `jniLibs`（两个 ABI 各 13 个 `.so`）。
 压缩后落在 APK 里约 80 MB，是主要体积来源。三条可选的路线，按推荐顺序：
@@ -328,3 +360,61 @@ AGP 自带 `splits { abi { ... } }`，一次构建出两个 APK：
 - `arm64` 设备上首次启动到引擎就绪预计 10–30 秒（PRoot 后端更慢，因为 syscall 翻译）；
   内核安装那几个百 MB 是主要等待来源，进度会实时打到控制台；
 - 部分加固 ROM 会拦截 PRoot 的 ptrace，此时请用「原生直跑」后端。
+
+---
+
+## 十一、形态定位：现在是什么、可以是什么
+
+三种形态，差别不在「谁重写了 UI」，而在**宿主有没有满足官方客户端期待的宿主契约**。
+
+| 形态 | 侧边栏浏览器 | 机制 |
+|---|---|---|
+| **网页版** | iframe 降级 | 无 `globalThis.dshDesktop` → 走 `IframeImpl` |
+| **桌面版**（Electron） | 真 Chromium 标签页 | 主进程注入 `dshDesktop`，走 `ElectronWebViewImpl` |
+| **本项目的 Android 版（当前）** | iframe 降级 | WebView 加载官方 Web UI，**零注入** |
+
+`dshDesktop` 的判定在官方客户端里就三行（`ui-sidebar-browser/src/client/index.ts`）：
+
+```ts
+const carrier = globalThis.dshDesktop
+const desktop = carrier?.protocolVersion === 1 ? carrier.browser : undefined
+if (desktop === undefined) installFrames(ctx, () => createIframePage)   // 降级
+else installFrames(scope, … createElectronPage(options, desktop, …))    // 桌面级
+```
+
+而它背后的接口只有三个方法，且注释明确写着 *"no Electron objects or arbitrary IPC cross this
+interface"* —— 官方是**故意**把它设计成宿主无关的，就是留给非 Electron 宿主（比如 Android）用：
+
+```ts
+interface DesktopBrowserBridge {
+  acquire(workspace: string): Promise<DesktopBrowserReservation>
+  release(lease: DesktopBrowserLeaseId): Promise<void>
+  onOpenRequested(lease, listener: (url: string) => void): () => void
+}
+```
+
+**所以「改成桌面版形态」是可行的**：Kotlin 侧实现这三个方法 + 原生 WebView 承载浏览器页，
+再用 `addJavascriptInterface` + `evaluateJavascript` 把 carrier 注入进去。
+接口很小，工作量主要在宿主侧（WebView 生命周期、存储分区隔离、面板位置跟随）。
+**尚未实现** —— 未经真机验证的功能不做承诺，这是本项目的既定纪律。
+
+---
+
+## 十二、诚实的边界（更新）
+
+**已完成并经过静态验证**
+- 五个模块全部编译通过；`assembleDebug` 产出 107.55 MiB APK
+- 双 ABI 的 ELF 依赖闭包 100% 自洽；内置 Node 24.18.0、PRoot 5.1.107（含 loader）
+- 预装内核包：942 MB → 501 → 131 → **21.2 MB**，实测数据，脚本可复现
+- `verify.sh` 34 项自检（新增 APK 体积健康度，防 zip 对齐膨胀复发）
+- 独立包名 + 独立 RSA-4096 签名
+
+**尚未在真机验证**
+- 端到端启动（含内核包解压）—— 需要一台 arm64 手机
+- 解压实测耗时：131 MB / 约 3 万个文件，预估 30–90 秒（未在真机测过）
+- Ubuntu rootfs 后端、离线唤醒、官方插件安装页
+- 桌面版形态（`dshDesktop` carrier）—— 未实现
+
+**已知缺陷**
+- 流体云胶囊已接通（插件订阅 `session/event` → 桥 `/event` 端点），但未在真实会话中跑过
+- `replaceLegacyPackaging` + 超大 STORED 资源会触发 zipflinger 对齐膨胀（已在构建配置中规避，并在自检里加了断言）

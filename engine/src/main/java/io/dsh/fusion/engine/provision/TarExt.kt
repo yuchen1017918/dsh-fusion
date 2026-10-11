@@ -3,6 +3,8 @@ package io.dsh.fusion.engine.provision
 import io.dsh.fusion.engine.LogBus
 import org.apache.commons.compress.archivers.tar.TarArchiveInputStream
 import org.apache.commons.compress.compressors.gzip.GzipCompressorInputStream
+import org.apache.commons.compress.compressors.xz.XZCompressorInputStream
+import java.io.PushbackInputStream
 import java.io.BufferedInputStream
 import java.io.File
 import java.io.FileOutputStream
@@ -32,11 +34,22 @@ object TarExt {
         val destRoot = destDir.canonicalFile
         val gz = archive.name.endsWith(".gz", true) || archive.name.endsWith(".tgz", true)
 
+        LogBus.i(TAG, "解包 ${archive.name} -> ${destDir.absolutePath}")
+        return openArchive(archive, gz).use { tar -> drain(tar, destDir, destRoot, stripComponents, onEntry) }
+    }
+
+    /** 真正干活的那个循环：两个入口共用。 */
+    private fun drain(
+        tar: TarArchiveInputStream,
+        destDir: File,
+        destRoot: File,
+        stripComponents: Int,
+        onEntry: ((String) -> Unit)?,
+    ): Int {
         var count = 0
         var lastReport = 0L
         val started = System.currentTimeMillis()
-
-        openArchive(archive, gz).use { tar ->
+        run {
             var entry = tar.nextEntry
             while (entry != null) {
                 val raw = entry.name.trimStart('/')
@@ -90,13 +103,56 @@ object TarExt {
                 entry = tar.nextEntry
             }
         }
-        LogBus.i(TAG, "解包完成 ${archive.name} -> ${destDir.absolutePath}，共 $count 条，用时 ${(System.currentTimeMillis() - started) / 1000}s")
+        LogBus.i(TAG, "解包完成 ${destDir.absolutePath}，共 $count 条，用时 ${(System.currentTimeMillis() - started) / 1000}s")
         return count
     }
 
     private fun openArchive(archive: File, gz: Boolean): TarArchiveInputStream {
         val base = BufferedInputStream(archive.inputStream(), 1 shl 16)
         return if (gz) TarArchiveInputStream(GzipCompressorInputStream(base, true)) else TarArchiveInputStream(base)
+    }
+
+    /**
+     * 从**流**解包。
+     *
+     * 需要它是因为内置内核包躺在 APK 的 assets 里，只能流式读，
+     * 没有可供 seek 的真实文件路径。
+     *
+     * 压缩格式靠**魔数**判断而不是靠扩展名：文件名是人起的，魔数是事实。
+     *   xz   : FD 37 7A 58 5A 00
+     *   gzip : 1F 8B
+     * 其余一律当裸 tar。
+     */
+    fun extractStream(
+        source: java.io.InputStream,
+        name: String,
+        destDir: File,
+        stripComponents: Int = 0,
+        onEntry: ((String) -> Unit)? = null,
+    ): Int {
+        if (!destDir.exists() && !destDir.mkdirs()) {
+            throw ExtractException("无法创建目录 ${destDir.absolutePath}")
+        }
+        val destRoot = destDir.canonicalFile
+        val base = BufferedInputStream(source, 1 shl 16)
+        val head = PushbackInputStream(base, 6)
+        val magic = ByteArray(6)
+        val read = head.read(magic)
+        if (read > 0) head.unread(magic, 0, read)
+
+        val tar = when {
+            read >= 6 && magic[0] == 0xFD.toByte() && magic[1] == 0x37.toByte() &&
+                magic[2] == 0x7A.toByte() && magic[3] == 0x58.toByte() &&
+                magic[4] == 0x5A.toByte() && magic[5] == 0x00.toByte() ->
+                TarArchiveInputStream(XZCompressorInputStream(head, true))
+
+            read >= 2 && magic[0] == 0x1F.toByte() && magic[1] == 0x8B.toByte() ->
+                TarArchiveInputStream(GzipCompressorInputStream(head, true))
+
+            else -> TarArchiveInputStream(head)
+        }
+        LogBus.i(TAG, "流式解包 $name -> ${destDir.absolutePath}（格式首字节 ${magic.take(read).joinToString(" ") { "%02X".format(it) }}）")
+        return drain(tar, destDir, destRoot, stripComponents, onEntry)
     }
 
     private fun strip(path: String, components: Int): String {

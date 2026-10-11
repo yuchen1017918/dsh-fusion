@@ -230,7 +230,11 @@ class MainActivity : AppCompatActivity() {
                         EngineState.STARTING, EngineState.DEGRADED -> "正在拉起引擎"
                         else -> "引擎未就绪"
                     }
-                    emptyBody.text = status.detail.ifBlank { "点下面的按钮启动，或先去「体检」看看环境。" }
+                    // 顺带把引擎的最后一行输出摊在这里 —— 起不来的时候，
+                    // 「正在下载什么」比一句「启动中…」有用得多
+                    val tail = FusionRuntime.supervisor().recentLines(1).firstOrNull()?.message
+                    val detail = status.detail.ifBlank { "点下面的按钮启动，或先去「体检」看看环境。" }
+                    emptyBody.text = if (tail.isNullOrBlank()) detail else "$detail\n\n$tail"
                     emptyAction.text = when (status.state) {
                         EngineState.FAILED -> "重试"
                         EngineState.STARTING, EngineState.DEGRADED -> "查看控制台"

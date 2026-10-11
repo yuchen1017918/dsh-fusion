@@ -45,6 +45,20 @@ class SetupActivity : AppCompatActivity() {
             13f, UiKit.TEXT_DIM,
         ).apply { setPadding(0, UiKit.dp(this@SetupActivity, 8f), 0, UiKit.dp(this@SetupActivity, 14f)) })
 
+        // 内置内核包时把「要等多久、别关应用」讲在前面 ——
+        // 解压一百多 MB 时用户最怕的就是「是不是卡死了」
+        val bundleInfo = runCatching { FusionRuntime.provisioner().kernelBundle.find() }.getOrNull()
+        if (bundleInfo != null) {
+            column.addView(UiKit.card(this, "准备工作", UiKit.text(
+                this,
+                "正在初始化本地环境，预计需要 30 秒到 1 分钟，请勿关闭应用。\n\n" +
+                    "· 内核已随安装包提供，本步骤不需要联网\n" +
+                    "· 会解开约 ${bundleInfo.uncompressedBytes / 1048576} MB 的文件，手机可能发热，属正常\n" +
+                    "· 完成后占用应用私有空间约 ${bundleInfo.uncompressedBytes / 1048576} MB",
+                12.5f, UiKit.TEXT_DIM,
+            )).apply { setPadding(0, 0, 0, UiKit.dp(this@SetupActivity, 14f)) })
+        }
+
         stepsBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
         column.addView(UiKit.card(this, "装配清单", stepsBox))
 
@@ -58,6 +72,7 @@ class SetupActivity : AppCompatActivity() {
         progress = android.widget.ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal).apply {
             isIndeterminate = true
             visibility = View.GONE
+            max = 1000
         }
         column.addView(progress, LinearLayout.LayoutParams(MATCH, WRAP).apply { topMargin = UiKit.dp(this@SetupActivity, 10f) })
 
@@ -105,26 +120,45 @@ class SetupActivity : AppCompatActivity() {
         action.isEnabled = false
         action.alpha = 0.5f
 
+        progress.isIndeterminate = false
+        progress.progress = 0
+
         lifecycleScope.launch {
             val provisioner = FusionRuntime.provisioner()
             val ok = withContext(Dispatchers.IO) {
-                provisioner.provisionCore { message ->
-                    LogBus.i("装配", message)
-                    lifecycleScope.launch {
-                        statusText.text = message
-                        refresh()
-                    }
-                }
+                provisioner.provisionCore(
+                    onStep = { message ->
+                        LogBus.i("装配", message)
+                        lifecycleScope.launch {
+                            statusText.text = message
+                            refresh()
+                        }
+                    },
+                    onProgress = { p ->
+                        // 进度回调来自 IO 线程，UI 更新必须回主线程
+                        val percent = (p.ratio * 100).toInt()
+                        val doneMb = p.bytesDone / 1048576
+                        val totalMb = p.bytesTotal / 1048576
+                        lifecycleScope.launch {
+                            progress.progress = (p.ratio * 1000).toInt()
+                            statusText.text = p.phase + "（已处理 " + doneMb + " / " + totalMb + " MB，" + percent + "%）"
+                        }
+                    },
+                )
             }
             busy = false
             progress.visibility = View.GONE
             action.isEnabled = true
             action.alpha = 1f
+            progress.isIndeterminate = !ok
             statusText.text = if (ok) {
                 "装配完成，正在拉起引擎…"
             } else {
-                "装配失败 —— 打开「控制台」看具体在哪一步断的；也可以点「设备体检」排查环境"
+                "装配未能完成。可能原因：存储空间不足（需要约 500 MB 余量）、\n" +
+                    "解压被中断、或网络不通。\n\n" +
+                    "点下面的按钮可重试；重试仍失败请打开「控制台」看具体断在哪一步。"
             }
+            action.text = if (ok) "重新装配" else "重试"
             refresh()
             if (ok) {
                 EngineService.start(this@SetupActivity)

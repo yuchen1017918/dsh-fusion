@@ -51,6 +51,20 @@ object RuntimeEnv {
 
         env["PROOT_TMP_DIR"] = paths.tmpDir.absolutePath
         env["PROOT_NO_SECCOMP"] = "1"
+        // PRoot 的 ELF 加载器。**少了它 proot 基本是残废的**：
+        // Android 禁止 execve 应用数据目录里的文件，加载器让 proot 能把客人程序
+        // 直接映射起来跑，绕开那次注定失败的 execve。
+        val loader = File(paths.nativeDir, "libproot-loader.so")
+        if (loader.exists()) {
+            env["PROOT_LOADER"] = loader.absolutePath
+            env["PROOT_LOADER_32"] = File(paths.nativeDir, "libproot-loader32.so").absolutePath
+        }
+
+        // pnpm 必须被关在应用私有目录里写东西，否则它去碰 $HOME/.local/share 会失败
+        env["PNPM_HOME"] = paths.pnpmHome.absolutePath
+        env["XDG_CACHE_HOME"] = paths.xdgCache.absolutePath
+        env["XDG_DATA_HOME"] = paths.xdgData.absolutePath
+        env["XDG_CONFIG_HOME"] = paths.xdgConfig.absolutePath
 
         if (paths.certFile.exists()) {
             env["NODE_EXTRA_CA_CERTS"] = paths.certFile.absolutePath

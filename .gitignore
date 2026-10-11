@@ -12,6 +12,10 @@ app/src/main/jniLibs/
 app/src/main/assets/runtime/npm-*.tgz
 app/src/main/assets/runtime/cert.pem
 app/src/main/assets/runtime/runtime-manifest.json
+# 预装内核包（由 tools/build-kernel-bundle.py 产出，18 MB 压缩 / 114 MB 未压缩）。
+# 不入库的理由与 jniLibs 一致：它是生成物，生成脚本才是可复现的那一份。
+# 它会被打进 APK 一起分发（这正是「装完即用」的来源）。
+app/src/main/assets/kernel/
 
 # ── 中间产物与日志 ────────────────────────────────────────
 .build/

@@ -18,23 +18,35 @@ object PhantomGuard {
 
     data class State(
         val monitorEnabled: Boolean?,
-        val childProcessCount: Int,
+        val childProcessCount: Int?,
         val advice: String,
     )
 
-    /** 当前进程的直接子进程数（/proc 能读多少算多少）。 */
-    fun childProcessCount(): Int = runCatching {
+    /**
+     * 当前进程的直接子进程数。
+     *
+     * 返回 null 表示**读不到**，而不是 0。
+     * 之前这里吞掉异常返回 0，界面就显示「子进程 0 个」—— 一个看起来正常、
+     * 实际上毫无信息量的数字。Android 上 `/proc/<pid>/task/<tid>/children`
+     * 未必可读，把「未知」伪装成「零」比报错更糟。
+     */
+    fun childProcessCount(): Int? {
         val pid = android.os.Process.myPid()
         val tasks = java.io.File("/proc/$pid/task")
+        val taskDirs = tasks.listFiles() ?: return null
+        if (taskDirs.isEmpty()) return null
+
         var count = 0
-        tasks.listFiles()?.forEach { task ->
-            runCatching {
-                val children = java.io.File(task, "children").readText().trim()
-                if (children.isNotEmpty()) count += children.split(' ').size
-            }
+        var readAny = false
+        taskDirs.forEach { task ->
+            val file = java.io.File(task, "children")
+            if (!file.canRead()) return@forEach
+            val text = runCatching { file.readText().trim() }.getOrNull() ?: return@forEach
+            readAny = true
+            if (text.isNotEmpty()) count += text.split(' ').count { it.isNotBlank() }
         }
-        count
-    }.getOrDefault(0)
+        return if (readAny) count else null
+    }
 
     fun query(shellCommand: (String) -> String?): Boolean? {
         val out = shellCommand("settings get global $KEY") ?: return null
@@ -47,12 +59,15 @@ object PhantomGuard {
 
     fun disableCommand(): String = "settings put global $KEY false"
 
-    fun describe(monitorEnabled: Boolean?, children: Int): String = when {
-        monitorEnabled == true ->
-            "监控开启中（子进程 $children 个）——超过约 32 个会被系统静默杀掉，建议关掉监控"
-        monitorEnabled == false ->
-            "监控已关闭（子进程 $children 个）——引擎可以安心拉子进程"
-        else ->
-            "无法确定监控状态（需要 Shizuku/Root 才能查），当前子进程 $children 个；超过 32 个有被清理的风险"
+    fun describe(monitorEnabled: Boolean?, children: Int?): String {
+        val childText = children?.let { "$it 个" } ?: "读不到（本机 /proc 未开放该字段）"
+        return when {
+            monitorEnabled == true ->
+                "监控开启中（子进程 $childText）——超过约 32 个会被系统静默杀掉，建议关掉监控"
+            monitorEnabled == false ->
+                "监控已关闭（子进程 $childText）——引擎可以安心拉子进程"
+            else ->
+                "无法确定监控状态（需要 Shizuku/Root 才能查），当前子进程 $childText；超过 32 个有被清理的风险"
+        }
     }
 }

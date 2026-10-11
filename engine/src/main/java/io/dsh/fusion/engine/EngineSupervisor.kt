@@ -87,7 +87,7 @@ class EngineSupervisor(
         // 显式标注类型：try/catch 作为表达式时若 catch 分支是 return，
         // 编译器可能把整体推成 Any，后面 proc.pid() 就会以「Unresolved reference」的形式炸掉
         val proc: Process = try {
-            runner.start(command, envFor(backend), paths.root)
+            runner.start(command, envFor(backend, port), paths.root)
         } catch (e: Exception) {
             return fail(backend, e.message ?: "进程启动失败")
         }
@@ -188,6 +188,9 @@ class EngineSupervisor(
                             detail = "连续 $consecutive 次重启失败，已停下。看控制台日志定位原因。",
                         )
                         LogBus.e(TAG, "看门狗放弃：连续 $consecutive 次失败")
+                        EventBus.emit(
+                            FusionEvent.Failure("引擎连续 $consecutive 次重启失败，已停止自动拉回。到控制台看日志。")
+                        )
                         break
                     }
                     startInternal(_status.value.backend, restarts)
@@ -209,30 +212,95 @@ class EngineSupervisor(
         // cordis 的 HMR / require-builtin 插件要求 --expose-internals；
         // 这个标志只能走命令行，塞进 NODE_OPTIONS 是无效的。
         val nodeFlags = if (settings.exposeInternals) listOf("--expose-internals") else emptyList()
-        val appArgs = listOf("web", "--port", port.toString(), "--host", "127.0.0.1")
+
+        /**
+         * 有宿主脚本就走我们自己的入口，否则退回官方 CLI。
+         *
+         * 差别只在一处：官方 bin.js 调 runProfile 时不传 packageManager，
+         * 于是插件安装器会去 PATH 里找 pnpm —— 而 Android 上那是不可能的
+         * （没装 + W^X 禁止执行数据目录里的脚本）。自建入口按官方为打包应用
+         * 留的口子把 packageManager 显式传进去，官方插件页就活了。
+         */
+        val useHost = paths.hostReady()
+        val guest = backend == EngineBackend.UBUNTU_PROOT
+        val nodeExe = if (guest) "${ProotLauncher.Guest.BIONIC}/libnode.so" else paths.nodeBin.absolutePath
+        val entry = if (useHost) {
+            if (guest) "${ProotLauncher.Guest.HOST}/fusion-host.mjs" else paths.hostScript.absolutePath
+        } else {
+            if (guest) "${ProotLauncher.Guest.DSH}/lib/node_modules/@deepseek-ai/dsh/lib/bin.js"
+            else paths.dshEntry.absolutePath
+        }
+
+        // 走宿主脚本时 profile 与 app 参数由环境变量传（脚本会自己拼），
+        // 走官方 CLI 时它们是位置参数。
+        val entryArgs = if (useHost) emptyList() else listOf("web", "--port", port.toString(), "--host", "127.0.0.1")
+
+        LogBus.i(
+            TAG,
+            if (useHost) "启动方式：自建宿主入口（插件安装用带内 pnpm）"
+            else "启动方式：官方 CLI（未找到宿主脚本，插件安装页会找不到 pnpm）",
+        )
 
         return when (backend) {
             EngineBackend.BIONIC_NATIVE ->
-                listOf(paths.nodeBin.absolutePath) + nodeFlags + listOf(paths.dshEntry.absolutePath) + appArgs
+                listOf(nodeExe) + nodeFlags + listOf(entry) + entryArgs
 
-            EngineBackend.UBUNTU_PROOT -> proot.command(
-                listOf("${ProotLauncher.Guest.BIONIC}/libnode.so") + nodeFlags + listOf(
-                    "${ProotLauncher.Guest.DSH}/lib/node_modules/@deepseek-ai/dsh/lib/bin.js",
-                ) + appArgs,
-                ProotLauncher.Guest.DSH_HOME,
-            )
+            EngineBackend.UBUNTU_PROOT ->
+                proot.command(listOf(nodeExe) + nodeFlags + listOf(entry) + entryArgs, ProotLauncher.Guest.DSH_HOME)
         }
     }
 
-    private fun envFor(backend: EngineBackend): Map<String, String> {
+    /**
+     * 把宿主路径翻译成客人视角的路径（PRoot 后端用）。
+     * 顺序有讲究：先匹配更长的前缀，否则 /root/home 会被 /root 先吃掉。
+     */
+    private fun toGuest(hostPath: String): String = when {
+        hostPath.startsWith(paths.hostDir.absolutePath) ->
+            hostPath.replaceFirst(paths.hostDir.absolutePath, ProotLauncher.Guest.HOST)
+        hostPath.startsWith(paths.nativeDir.absolutePath) ->
+            hostPath.replaceFirst(paths.nativeDir.absolutePath, ProotLauncher.Guest.BIONIC)
+        hostPath.startsWith(paths.prefixDir.absolutePath) ->
+            hostPath.replaceFirst(paths.prefixDir.absolutePath, ProotLauncher.Guest.DSH)
+        hostPath.startsWith(paths.dshHome.absolutePath) ->
+            hostPath.replaceFirst(paths.dshHome.absolutePath, ProotLauncher.Guest.DSH_HOME)
+        else -> hostPath
+    }
+
+    private fun envFor(backend: EngineBackend, port: Int): Map<String, String> {
         // 桥的地址与 token 只能通过环境变量交给插件 —— 端口是启动时动态选的
-        val bridgeEnv = bridgeEnv()
-        val base = RuntimeEnv.base(paths, settings.npmRegistry, settings.heapMb, bridgeEnv)
+        val extra = HashMap<String, String>(bridgeEnv())
+        extra.putAll(hostEnv(backend, port))
+        val base = RuntimeEnv.base(paths, settings.npmRegistry, settings.heapMb, extra)
         return when (backend) {
             EngineBackend.BIONIC_NATIVE -> base
             // 客人视角的路径必须覆盖掉宿主视角，顺序不能反
             EngineBackend.UBUNTU_PROOT -> base + RuntimeEnv.guest(paths)
         }
+    }
+
+    /**
+     * 宿主脚本需要的环境变量。
+     *
+     * 走 PRoot 后端时这些路径必须是**客人视角**的 —— 脚本在容器里跑，
+     * 给它宿主路径等于让它去找一个不存在的文件。
+     */
+    private fun hostEnv(backend: EngineBackend, port: Int): Map<String, String> {
+        if (!paths.hostReady()) return emptyMap()
+        val guest = backend == EngineBackend.UBUNTU_PROOT
+        fun p(f: File): String = if (guest) toGuest(f.absolutePath) else f.absolutePath
+
+        val env = HashMap<String, String>()
+        env["DSH_FUSION_DSH_DIR"] = p(paths.dshDir)
+        env["DSH_FUSION_PROFILE"] = "web"
+        env["DSH_FUSION_NODE_BIN"] = p(paths.nodeBin)
+        // web app 自己的参数；用 NUL 分隔，避免任何引号/空格转义问题
+        env["DSH_FUSION_APP_ARGS"] = listOf("--port", port.toString(), "--host", "127.0.0.1").joinToString(NUL)
+        if (paths.pnpmReady()) {
+            env["DSH_FUSION_PNPM_ENTRY"] = p(paths.pnpmEntry)
+        } else {
+            LogBus.w(TAG, "pnpm 未就位：官方插件安装页会失败。首次装配时会自动装上。")
+        }
+        return env
     }
 
     /** 把回环桥的位置告诉 node 侧插件。 */
@@ -284,7 +352,27 @@ class EngineSupervisor(
     private fun fail(backend: EngineBackend, detail: String): EngineStatus {
         LogBus.e(TAG, detail)
         _status.value = _status.value.copy(state = EngineState.FAILED, backend = backend, detail = detail)
+        // 让悬浮球与流体云也看得见失败 —— 否则用户只看到一个不动的球
+        EventBus.emit(FusionEvent.Failure(detail))
         return _status.value
+    }
+
+    /**
+     * 装配期标记。
+     *
+     * 之前 EngineState.PROVISIONING 是个只被 when 分支处理、从未被赋值的死状态；
+     * 现在由 Provisioner 在真正下载内核时置位，界面就能区分
+     * 「在装东西」和「在启动引擎」—— 这两件事的等待理由完全不同。
+     */
+    fun markProvisioning(detail: String) {
+        LogBus.i(TAG, "进入装配态：$detail")
+        _status.value = _status.value.copy(state = EngineState.PROVISIONING, detail = detail)
+    }
+
+    fun clearProvisioning() {
+        if (_status.value.state == EngineState.PROVISIONING) {
+            _status.value = _status.value.copy(state = EngineState.IDLE, detail = "装配结束")
+        }
     }
 
     /** 最近的引擎输出行，用于「流体云」胶囊与错误提示。 */
@@ -293,6 +381,9 @@ class EngineSupervisor(
 
     companion object {
         private const val TAG = "引擎"
+
+        /** 环境变量里分隔多个参数的哨兵字符（不可能出现在参数里）。 */
+        private const val NUL = "\u0000"
         private const val START_TIMEOUT_MS = 180_000L
         private const val WATCHDOG_INTERVAL_MS = 4_000L
         private const val MAX_WATCHDOG_RESTARTS = 5

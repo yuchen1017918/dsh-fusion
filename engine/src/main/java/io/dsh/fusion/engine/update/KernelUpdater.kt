@@ -3,7 +3,7 @@ package io.dsh.fusion.engine.update
 import io.dsh.fusion.engine.FusionPaths
 import io.dsh.fusion.engine.FusionSettings
 import io.dsh.fusion.engine.LogBus
-import io.dsh.fusion.engine.provision.DshProvisioner
+import io.dsh.fusion.engine.Provisioner
 import org.json.JSONObject
 import java.net.HttpURLConnection
 import java.net.URL
@@ -18,12 +18,12 @@ import java.net.URL
 class KernelUpdater(
     private val paths: FusionPaths,
     private val settings: FusionSettings,
-    private val provisioner: DshProvisioner,
+    private val provisioner: Provisioner,
 ) {
 
     data class Release(val version: String, val publishedAt: String, val prerelease: Boolean)
 
-    fun currentVersion(): String? = provisioner.installedVersion()
+    fun currentVersion(): String? = provisioner.dsh.installedVersion()
 
     fun available(limit: Int = 40): List<Release> = runCatching {
         val url = "${settings.npmRegistry.trimEnd('/')}/@deepseek-ai%2Fdsh"
@@ -56,7 +56,8 @@ class KernelUpdater(
     /** 幂等切换到指定版本：只重装 npm 侧的东西，DSH_HOME 里的会话与插件一律保留。 */
     suspend fun switchTo(version: String, onStep: ((String) -> Unit)? = null): Boolean {
         LogBus.i(TAG, "切换内核 -> $version（当前 ${currentVersion() ?: "无"}）")
-        val ok = provisioner.install(version, "web", onStep)
+        // 走 Provisioner 而不是 DshProvisioner：只有这样桥插件文件才会被一起铺进去
+        val ok = provisioner.installKernel(version, onStep)
         if (ok) LogBus.i(TAG, "内核已切到 $version")
         else LogBus.e(TAG, "内核切换失败：$version")
         return ok

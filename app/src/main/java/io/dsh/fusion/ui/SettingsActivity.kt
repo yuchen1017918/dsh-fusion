@@ -158,6 +158,9 @@ class SettingsActivity : AppCompatActivity() {
         ))
         column.addView(spaced(UiKit.card(this, "下载与内核", netCard)))
 
+        // ---------------- 插件 ----------------
+        column.addView(spaced(UiKit.card(this, "插件", buildPluginBox())))
+
         // ---------------- 关于 ----------------
         val about = UiKit.text(
             this,
@@ -170,6 +173,117 @@ class SettingsActivity : AppCompatActivity() {
 
         setContentView(UiKit.scroll(this, column))
         container = column
+    }
+
+    // ------------------------------------------------------------------ 插件
+
+    /**
+     * 插件卡片。
+     *
+     * 这里刻意把「装上」和「挂载」分开显示：dsh 的插件要两处同时成立才真正生效，
+     * 只做完 npm install 的话，插件是装了但不会跑 —— 用户会以为装失败了。
+     * 界面上直接把这个中间状态点出来。
+     */
+    private fun buildPluginBox(): View {
+        val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        val entries = runCatching { FusionRuntime.provisioner().plugins.list() }.getOrDefault(emptyList())
+        val effective = entries.count { it.effective }
+
+        box.addView(UiKit.text(
+            this,
+            "已装 ${entries.size} 个，其中 ${effective} 个正在生效。" +
+                "官方 npm 包、GitHub tarball 都能装 —— 走的就是 npm 那条路。",
+            12f, UiKit.TEXT_DIM,
+        ))
+
+        if (entries.isEmpty()) {
+            box.addView(UiKit.text(this, "还没有装任何插件。", 12.5f, UiKit.TEXT_DIM)
+                .apply { setPadding(0, UiKit.dp(this@SettingsActivity, 8f), 0, 0) })
+        }
+
+        entries.forEach { entry ->
+            val status = when {
+                entry.effective -> "生效中"
+                entry.installed -> "已装上但未挂载"
+                entry.bundled -> "已挂载但没装上"
+                else -> "未生效"
+            }
+            val actions = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+            actions.addView(UiKit.pill(this, if (entry.bundled) "停用" else "启用") {
+                FusionRuntime.provisioner().plugins.mount(entry.name, "web", !entry.bundled)
+                Toast.makeText(this, "已${if (entry.bundled) "停用" else "启用"} ${entry.name}，重启引擎后生效", Toast.LENGTH_SHORT).show()
+                render()
+            })
+            actions.addView(UiKit.pill(this, "移除") { removePlugin(entry.name) })
+
+            box.addView(
+                UiKit.row(
+                    this,
+                    entry.name,
+                    "${entry.specifier} · $status · ${entry.kind}",
+                    actions,
+                    if (entry.effective) UiKit.ACCENT else UiKit.WARN,
+                ),
+            )
+        }
+
+        box.addView(UiKit.spacer(this, 12f))
+        box.addView(UiKit.text(this, "安装新插件", 13f, UiKit.TEXT, true))
+        val input = EditText(this).apply {
+            hint = "包名，如 dsh-meme 或 @scope/pkg@1.2.3"
+            setTextColor(UiKit.TEXT)
+            setHintTextColor(UiKit.TEXT_DIM)
+            textSize = 13f
+            setPadding(0, UiKit.dp(this@SettingsActivity, 6f), 0, UiKit.dp(this@SettingsActivity, 6f))
+        }
+        box.addView(input)
+        box.addView(UiKit.pill(this, "安装并挂载", primary = true) {
+            installPlugin(input.text.toString())
+        })
+        box.addView(UiKit.text(
+            this,
+            "注意：需要现场编译原生模块的插件（node-gyp 那一类）在「原生直跑」后端下装不上，\n" +
+                "请先切到「Ubuntu 容器」后端再装；指向电脑本地路径的 file:/link: 插件在手机上无意义。",
+            11.5f, UiKit.TEXT_DIM,
+        ).apply { setPadding(0, UiKit.dp(this@SettingsActivity, 8f), 0, 0) })
+        return box
+    }
+
+    private fun installPlugin(spec: String) {
+        if (spec.isBlank()) {
+            Toast.makeText(this, "请填写包名", Toast.LENGTH_SHORT).show()
+            return
+        }
+        lifecycleScope.launch {
+            Toast.makeText(this@SettingsActivity, "开始安装 $spec，进度看控制台…", Toast.LENGTH_LONG).show()
+            val outcome = FusionRuntime.provisioner().plugins.add(spec, "web") { msg -> LogBus.i("设置", msg) }
+            AlertDialog.Builder(this@SettingsActivity)
+                .setTitle(if (outcome.ok) "安装完成" else "安装失败")
+                .setMessage(outcome.message + (if (outcome.ok) "" else "\n\n到「控制台」页能看到 npm 的完整输出。"))
+                .setPositiveButton("重启引擎并刷新") { _, _ ->
+                    if (outcome.ok) {
+                        io.dsh.fusion.service.EngineService.start(this@SettingsActivity, io.dsh.fusion.service.EngineService.ACTION_RESTART)
+                    }
+                    render()
+                }
+                .setNegativeButton("稍后", null)
+                .show()
+        }
+    }
+
+    private fun removePlugin(name: String) {
+        AlertDialog.Builder(this)
+            .setTitle("移除 $name")
+            .setMessage("会从 profile 卸载并取消挂载。该插件产生的数据不会被删除。")
+            .setPositiveButton("移除") { _, _ ->
+                lifecycleScope.launch {
+                    val outcome = FusionRuntime.provisioner().plugins.remove(name, "web") { msg -> LogBus.i("设置", msg) }
+                    Toast.makeText(this@SettingsActivity, outcome.message, Toast.LENGTH_LONG).show()
+                    render()
+                }
+            }
+            .setNegativeButton("取消", null)
+            .show()
     }
 
     // ------------------------------------------------------------------ 组件
@@ -294,8 +408,8 @@ class SettingsActivity : AppCompatActivity() {
                 .setItems(items) { _, which ->
                     lifecycleScope.launch {
                         Toast.makeText(this@SettingsActivity, "开始…耗时几分钟，进度看控制台", Toast.LENGTH_LONG).show()
-                        val ok = withContext(Dispatchers.IO) {
-                            FusionRuntime.provisioner().dsh.install(versions.version, "web") { msg -> LogBus.i("设置", msg) }
+                        val ok = FusionRuntime.provisioner().installKernel(versions.version) { msg ->
+                            LogBus.i("设置", msg)
                         }
                         Toast.makeText(this@SettingsActivity, if (ok) "内核已更新到 ${versions.version}" else "更新失败", Toast.LENGTH_LONG).show()
                         EngineService.start(this@SettingsActivity, EngineService.ACTION_RESTART)

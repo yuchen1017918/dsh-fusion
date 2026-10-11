@@ -217,6 +217,8 @@ class CompatDoctor(
         }
         val level = when {
             monitor == true -> Level.WARN
+            // 读不到子进程数时不再假装是 0 —— 那种「看起来正常」的假数据会掩盖真问题
+            children == null -> Level.OK
             monitor == null && children > 20 -> Level.WARN
             else -> Level.OK
         }

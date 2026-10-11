@@ -153,6 +153,32 @@ grep -q 'DSH_FUSION_BRIDGE_TOKEN' "$ROOT/engine/src/main/java/io/dsh/fusion/engi
 grep -q 'PROOT_NO_SECCOMP' "$ROOT/engine/src/main/java/io/dsh/fusion/engine/runtime/RuntimeEnv.kt" && pass "PRoot: PROOT_NO_SECCOMP=1（Android 必需）" || fail "PRoot 未设 PROOT_NO_SECCOMP"
 grep -q 'android.accessibilityservice.AccessibilityService' "$MF" && pass "无障碍 intent-filter 正确" || warn "无障碍 intent-filter 可疑"
 
+# ---------------------------------------------------------------- 5. APK 体积健康度
+echo
+echo "── 5. APK 体积健康度（防 zip 对齐膨胀）────────────────────"
+if [ -f "$APK" ] && command -v python3 >/dev/null 2>&1; then
+  python3 - "$APK" <<'PYEOF'
+import sys, os, zipfile
+apk = sys.argv[1]
+size = os.path.getsize(apk)
+with zipfile.ZipFile(apk) as z:
+    comp = sum(i.compress_size for i in z.infolist())
+    gap = z.start_dir - comp
+size_mb, comp_mb, gap_mb = size/1048576, comp/1048576, gap/1048576
+print(f"    文件 {size_mb:.2f} MiB · 条目压缩合计 {comp_mb:.2f} MiB · 对齐填充 {gap_mb:.2f} MiB")
+# 正常 APK 的对齐填充只有几十 KB。超过 8 MiB 说明 zip 写入器算错了偏移，
+# 内容被物理写了两遍 —— 实测踩过一次（STORED 的大 .xz 触发 zipflinger 偏移错误，
+# APK 从 107 MiB 涨到 129 MiB）。这条断言就是为了不让它再复发。
+if gap_mb > 8:
+    print(f"\033[31m✘\033[0m 对齐填充异常（{gap_mb:.1f} MiB）——检查是否有超大文件被设为不压缩(noCompress)")
+    sys.exit(1)
+print(f"\033[32m✔\033[0m 对齐填充正常（{gap_mb:.2f} MiB）")
+PYEOF
+  if [ $? -eq 0 ]; then PASS=$((PASS+1)); else FAIL=$((FAIL+1)); fi
+else
+  warn "跳过（缺 APK 或 python3）"
+fi
+
 # ---------------------------------------------------------------- 汇总
 echo
 echo "═══════════════════════════════════════════════════════════════"

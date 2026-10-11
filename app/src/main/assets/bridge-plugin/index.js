@@ -7,6 +7,8 @@
  *  · 一切经由 127.0.0.1 的回环桥转发，带 token 鉴权；手机数据不出设备。
  *  · 返回值统一收敛成 { ok, summary, detail } 三元组：截图这类工具的 base64
  *    有几百 KB，直接塞进上下文能把一次对话撑爆，所以这里做了尺寸裁剪。
+ *  · 反向还有一条通道：订阅 dsh 的 session 事件，把「模型刚说完一段话」
+ *    推给手机端，屏幕顶部的流体云胶囊就是靠它浮出来的。
  */
 
 import { readFileSync } from 'node:fs'
@@ -114,6 +116,102 @@ function summarize(result) {
 }
 
 /**
+ * 从 assistant/message 事件里抽出正文。
+ *
+ * 真实载荷（对着本机一份 v4 会话文件核过，不是照文档猜的）：
+ *   { type:'assistant/message', seq, data:{ turn, step, message:{ role, content:[...] } } }
+ * 其中 content 是块数组，只有 type === 'text' 的块是给用户看的正文，
+ * `reasoning` 块是思维链 —— 拿它当回复展示会很难看，所以必须过滤。
+ *
+ * @param message - data.message
+ * @returns 纯正文；没有正文时返回空串。
+ */
+function extractAssistantText(message) {
+  const blocks = Array.isArray(message?.content) ? message.content : []
+  return blocks
+    .filter(block => block && block.type === 'text' && typeof block.text === 'string')
+    .map(block => block.text)
+    .join('\n')
+    .trim()
+}
+
+/** 已经推过的最大 seq，用来去重（同一条消息可能被重放）。 */
+let lastPushedSeq = -1
+
+/**
+ * 把一条事件推给手机端。
+ *
+ * 刻意吞掉一切异常：胶囊是锦上添花，绝不能因为它把会话拖慢或拖挂。
+ * 超时也给得很短 —— 推不动就不推了。
+ *
+ * @param kind - 'reply' | 'failure'。
+ * @param payload - 事件附加数据。
+ */
+async function pushEvent(kind, payload) {
+  const { base, token } = bridgeConfig()
+  try {
+    await fetch(`${base}/event`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-fusion-token': token },
+      body: JSON.stringify({ kind, ...payload }),
+      signal: AbortSignal.timeout(4000),
+    })
+  } catch {
+    // 手机端没起来 / 桥没开 / 超时，一律静默
+  }
+}
+
+/**
+ * 订阅会话事件。
+ *
+ * 订阅 API 取自 dsh 自身的用法（packages/session/session-persistence-jsonl）：
+ *   ctx.on('session/event', (session, event) => { ... })
+ *
+ * 特意放在 apply() 的最前面：流体云不该依赖 tools.json 是否存在 ——
+ * 工具清单缺失时，胶囊仍然应该工作。
+ *
+ * @param ctx - 宿主上下文。
+ */
+function subscribeSessionEvents(ctx) {
+  if (typeof ctx?.on !== 'function') {
+    ctx?.logger?.warn?.('[fusion-android-bridge] 宿主没有 ctx.on，流体云事件通道未接通')
+    return
+  }
+  ctx.on('session/event', (session, event) => {
+    try {
+      if (!event || typeof event !== 'object') return
+
+      // 子代理会产出大量消息，全推到胶囊会变成刷屏；只关心顶层会话
+      if (session && session.parentSession) return
+
+      if (event.type === 'assistant/message') {
+        const seq = typeof event.seq === 'number' ? event.seq : -1
+        if (seq >= 0 && seq <= lastPushedSeq) return
+        const text = extractAssistantText(event.data?.message)
+        if (!text) return
+        if (seq >= 0) lastPushedSeq = seq
+        const interrupted = event.data?.interrupted === true
+        void pushEvent('reply', {
+          text: text.length > 1500 ? text.slice(0, 1500) + '\n…（已截断）' : text,
+          done: true,
+          interrupted,
+          session: session?.id ?? null,
+        })
+        return
+      }
+
+      if (event.type === 'agent/error') {
+        const message = event.data?.message ?? event.data?.error ?? 'agent error'
+        void pushEvent('failure', { text: String(message).slice(0, 400) })
+      }
+    } catch {
+      // 事件处理绝不允许把宿主拖下水
+    }
+  })
+  ctx.logger?.info?.('[fusion-android-bridge] 已订阅 session/event，流体云通道就绪')
+}
+
+/**
  * 注册一条能力为 DSH 工具。
  * @param ctx - 宿主上下文。
  * @param spec - tools.json 里的一条能力描述。
@@ -174,6 +272,9 @@ function registerOne(ctx, spec) {
  * @param ctx - 宿主上下文，`ctx.tools` 用于注册工具。
  */
 export function apply(ctx) {
+  // 先接事件通道：胶囊的可用性不该取决于工具清单在不在
+  subscribeSessionEvents(ctx)
+
   const manifest = loadManifest()
   if (!manifest) {
     ctx.logger?.warn?.(

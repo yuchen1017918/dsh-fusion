@@ -14,6 +14,9 @@ object Channels {
     const val VOICE = "fusion-voice"
     const val PET = "fusion-pet"
     const val CLOUD = "fusion-cloud"
+
+    /** 危险操作确认。高优先级 —— 它需要立刻被人看到。 */
+    const val CONFIRM = "fusion-confirm"
 }
 
 fun ensureNotificationChannels(context: Context) {
@@ -24,6 +27,7 @@ fun ensureNotificationChannels(context: Context) {
         Triple(Channels.VOICE, "语音唤醒", NotificationManager.IMPORTANCE_LOW),
         Triple(Channels.PET, "悬浮桌宠", NotificationManager.IMPORTANCE_MIN),
         Triple(Channels.CLOUD, "流体云回复", NotificationManager.IMPORTANCE_DEFAULT),
+        Triple(Channels.CONFIRM, "危险操作确认", NotificationManager.IMPORTANCE_HIGH),
     ).forEach { (id, name, importance) ->
         if (nm.getNotificationChannel(id) == null) {
             nm.createNotificationChannel(NotificationChannel(id, name, importance))

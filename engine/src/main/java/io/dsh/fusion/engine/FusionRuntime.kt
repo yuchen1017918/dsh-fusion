@@ -2,6 +2,7 @@ package io.dsh.fusion.engine
 
 import android.content.Context
 import io.dsh.fusion.engine.bridge.BridgeServer
+import org.json.JSONObject
 
 /**
  * 应用级单例装配点。
@@ -19,6 +20,23 @@ object FusionRuntime {
     @Volatile private var provisionerRef: Provisioner? = null
     @Volatile private var bridgeRef: BridgeServer? = null
     @Volatile private var toolHost: ToolHost? = null
+    @Volatile private var confirmationRef: ToolConfirmation? = null
+
+    /**
+     * 危险工具的人工确认闸。
+     *
+     * 接口放在 engine、实现放在 app：engine 不该知道通知怎么发，
+     * 而 app 不该知道桥怎么路由。中间这条缝就是它。
+     */
+    fun interface ToolConfirmation {
+        /**
+         * @param toolId 工具 id，例如 android_shell
+         * @param title 面向人的标题
+         * @param args 模型给的参数（用于展示「它想干什么」）
+         * @return true 放行；false 拒绝。超时一律按拒绝处理。
+         */
+        suspend fun confirm(toolId: String, title: String, args: JSONObject): Boolean
+    }
 
     /** 设备控制域的挂载点（由 app 模块在启动时填进来）。 */
     interface ToolHost {
@@ -45,6 +63,13 @@ object FusionRuntime {
     fun attachBridge(bridge: BridgeServer) {
         bridgeRef = bridge
     }
+
+    fun attachConfirmation(confirmation: ToolConfirmation) {
+        confirmationRef = confirmation
+    }
+
+    /** 没挂确认闸时返回 null —— 调用方自行决定「放行」还是「拒绝」。 */
+    fun confirmation(): ToolConfirmation? = confirmationRef
 
     fun context(): Context = appContext ?: error("FusionRuntime.install() 还没被调用")
     fun paths(): FusionPaths = pathsRef ?: error("FusionRuntime.install() 还没被调用")

@@ -12,6 +12,16 @@ val keystoreProps = Properties().apply {
 }
 fun secret(key: String, env: String): String? = System.getenv(env) ?: keystoreProps.getProperty(key)
 
+/**
+ * 是否把预装内核包打进 APK。
+ *
+ *  默认 true —— 这是「装完即用」的实现方式：首启只解压，不联网。
+ *  `-PwithKernelBundle=false` 出精简版（约 87 MB），首启走在线 npm 安装。
+ *  典型用法：arm64 正式版带包；x86_64 预览版（应用宝电脑版）不带。
+ */
+val withKernelBundle: Boolean =
+    (project.findProperty("withKernelBundle") as String?)?.toBoolean() ?: true
+
 android {
     namespace = "io.dsh.fusion"
     compileSdk = 35
@@ -49,8 +59,24 @@ android {
     }
 
     androidResources {
-        // 语音模型/rootfs 都是运行时下载，assets 里只有 npm 与证书
+        /**
+         * 只把 npm 的 tgz 设为不压缩。
+         *
+         * 内核包（.xz）**特意不放进 noCompress**：实测过，一旦它是 STORED 条目，
+         * AGP 的 zip 写入器（zipflinger）会算错后续条目的对齐偏移，
+         * 在 assets 区插进 21 MB 的空白 —— 内核包被物理写了两遍，只有一份有目录记录。
+         * 结果就是 APK 从 107 MiB 涨到 129 MiB，白白多出 21 MB。
+         *
+         * 交给 deflate 打：xz 已经压过了，deflate 基本压不动，体积几乎不变（实测 +0.3 MB），
+         * 但绕开了那个对齐 bug。代价是 AssetManager.openFd() 不可用 ——
+         * KernelBundleProvisioner 本来就有 open() 回退，进度改用读取字节数上报。
+         */
         noCompress += listOf("tgz")
+        if (!withKernelBundle) {
+            // 精简版：不带内置内核包。x86_64 预览版（应用宝）用它 ——
+            // 包里那份内核是给 arm64 Android 裁的，塞给 x86_64 反而装不上。
+            ignoreAssetsPattern = "kernel"
+        }
     }
 
     buildFeatures {

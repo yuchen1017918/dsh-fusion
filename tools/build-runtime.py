@@ -61,6 +61,12 @@ SKIP_PACKAGES = {"libandroid-support", "bash", "coreutils", "python", "python-pi
 LIBRARIES = [
     ("libnode.so",          "nodejs-lts",       "bin/node",                  None,               None),
     ("libproot.so",         "proot",            "bin/proot",                 None,               None),
+    # PRoot 的 ELF 加载器。**少了它 proot 基本是残废的**：
+    # Android 10+ 禁止 execve 应用数据目录里的文件，而这个加载器让 proot
+    # 能把客人程序直接映射起来跑，不必真的去 execve 那个文件（那正是会撞 W^X 的动作）。
+    # 它同样是「可执行文件伪装成 .so」—— 因为 jniLibs 只会解压 lib*.so。
+    ("libproot-loader.so",  "proot",            "libexec/proot/loader",      None,               None),
+    ("libproot-loader32.so", "proot",           "libexec/proot/loader32",    None,               None),
     ("libc++_shared.so",    "libc++",           "lib/libc++_shared.so",      "libc++_shared.so", "libc++_shared.so"),
     ("libicuuc.so",         "libicu",           "lib/libicuuc.so.78.3",      "libicuuc.so.78",   "libicuuc.so"),
     ("libicui18n.so",       "libicu",           "lib/libicui18n.so.78.3",    "libicui18n.so.78", "libicui18n.so"),

@@ -9,7 +9,6 @@ import io.dsh.fusion.engine.FusionEvent
 import io.dsh.fusion.engine.FusionRuntime
 import io.dsh.fusion.engine.LogBus
 import io.dsh.fusion.engine.ensureNotificationChannels
-import io.dsh.fusion.engine.provision.DshProvisioner
 import io.dsh.fusion.engine.bridge.BridgeRouter
 import io.dsh.fusion.engine.bridge.BridgeServer
 import java.net.InetAddress
@@ -29,6 +28,10 @@ class FusionApplication : Application() {
     lateinit var deviceManager: DeviceControlManager
         private set
 
+    /** 危险工具的人工确认闸。通知按钮经由 [ConfirmationReceiver] 回调到它。 */
+    lateinit var confirmationGate: ToolConfirmationGate
+        private set
+
     /** 当前是否有界面在前台 —— Android 12+ 只允许这时候启动前台服务。 */
     @Volatile
     var uiVisible: Boolean = false
@@ -43,12 +46,14 @@ class FusionApplication : Application() {
         val paths = FusionRuntime.paths()
         paths.ensure()
 
-        // 桥插件是从 assets 拷进 profile 的，内核装配器不该知道 Android 的存在
-        DshProvisioner.ASSET_READER = { name ->
-            runCatching { assets.open(name).use { it.readBytes() } }.getOrNull()
-        }
-
         ensureNotificationChannels(this)
+
+        // 危险操作确认闸。桥插件不再需要「全局 assets 读取器」——
+        // 插件文件由 Provisioner（它有 Context）读出来直接传给内核装配器。
+        confirmationGate = ToolConfirmationGate(this).also {
+            it.register()
+            FusionRuntime.attachConfirmation(it)
+        }
         startBridge()
         setupDeviceControl()
         trackForeground()
@@ -116,6 +121,11 @@ class FusionApplication : Application() {
         })
         // 首启就先注册一遍，让内核装配时能导出完整清单
         runCatching { deviceManager.registerTools() }
+    }
+
+    override fun onTerminate() {
+        confirmationGate.unregister()
+        super.onTerminate()
     }
 
     /** 能力清单变了要重新落盘 —— 插件在下次引擎启动时读取。 */
