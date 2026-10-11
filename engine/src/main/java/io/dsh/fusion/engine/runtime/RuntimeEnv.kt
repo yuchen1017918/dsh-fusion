@@ -60,6 +60,12 @@ object RuntimeEnv {
             env["PROOT_LOADER_32"] = File(paths.nativeDir, "libproot-loader32.so").absolutePath
         }
 
+        /**
+         * `DEEPSEEK_BASE_URL` 由 EngineSupervisor 注入（见那边的注释）。
+         * 它之所以能生效，是因为官方把这类「决定进程怎么上网」的变量限定为
+         * **只能由启动环境提供** —— 而这里构造的正是子进程的继承环境。
+         */
+
         // pnpm 必须被关在应用私有目录里写东西，否则它去碰 $HOME/.local/share 会失败
         env["PNPM_HOME"] = paths.pnpmHome.absolutePath
         env["XDG_CACHE_HOME"] = paths.xdgCache.absolutePath

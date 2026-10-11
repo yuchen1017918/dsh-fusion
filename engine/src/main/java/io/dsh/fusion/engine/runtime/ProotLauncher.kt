@@ -1,6 +1,7 @@
 package io.dsh.fusion.engine.runtime
 
 import io.dsh.fusion.engine.FusionPaths
+import java.io.File
 
 /**
  * PRoot 命令构造器 —— 「完整 Ubuntu 环境」这一半的实现。
@@ -20,6 +21,9 @@ class ProotLauncher(private val paths: FusionPaths) {
         const val TMP = "/tmp"
         const val CACHE = "/opt/cache"
         const val HOST = "/opt/host"
+
+        /** 本地大模型运行时（llama.cpp）。按需下载，不随 APK 发货。 */
+        const val LLM = "/opt/llm"
     }
 
     fun command(guestArgv: List<String>, workDir: String = Guest.HOME): List<String> {
@@ -41,6 +45,11 @@ class ProotLauncher(private val paths: FusionPaths) {
         bind(args, paths.cacheDir.absolutePath, Guest.CACHE)
         // 宿主脚本与 pnpm 的家目录也要可见，否则容器后端下插件安装无处可写
         bind(args, paths.hostDir.absolutePath, Guest.HOST)
+        // 本地大模型运行时也绑进去。**必须用 proot 跑它**：Android 10+ 禁止
+        // execve 应用数据目录里的文件，而 proot 用 loader 映射绕过这一点 ——
+        // 这正是它无法像 Node 那样塞进 jniLibs 的原因（下载的东西进不了只读的
+        // nativeLibraryDir）。
+        bind(args, File(paths.root, "llm").absolutePath, Guest.LLM)
         bind(args, paths.pnpmHome.absolutePath, "${Guest.CACHE}/pnpm")
 
         args += guestArgv

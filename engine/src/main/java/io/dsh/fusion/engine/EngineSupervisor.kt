@@ -54,6 +54,17 @@ class EngineSupervisor(
     /** 端口冲突只自动重试一次，避免在真实故障上反复重启。 */
     private var portRetried = false
 
+    /**
+     * 本地模型服务的地址提供者（由 FusionRuntime 注入；没启用本地模型时为空）。
+     *
+     * 一旦非空且返回了地址，就把它作为 `DEEPSEEK_BASE_URL` 注入引擎的**继承环境** ——
+     * 官方 `dsh-llm-deepseek` 解析 baseURL 的顺序是：
+     *   `config.baseURL ?? environment.get("DEEPSEEK_BASE_URL") ?? 官方默认`
+     * 而这个变量在「只能由启动环境提供」的名单里（与 `ALL_PROXY`、`CURL_CA_BUNDLE` 同列），
+     * 所以**走环境变量是官方认可的正规入口**，不需要改用户那个 100 KB 的 cordis.patch.yml。
+     */
+    var localModelBaseUrl: (() -> String?)? = null
+
     val url: String? get() = _status.value.url
     val isRunning: Boolean get() = _status.value.running
 
@@ -294,6 +305,11 @@ class EngineSupervisor(
         // 桥的地址与 token 只能通过环境变量交给插件 —— 端口是启动时动态选的
         val extra = HashMap<String, String>(bridgeEnv())
         extra.putAll(hostEnv(backend, port))
+        // 本地模型在跑 → 把 DSH 指过去。取不到地址就不设，让它照常走云端。
+        runCatching { localModelBaseUrl?.invoke() }.getOrNull()?.takeIf { it.isNotBlank() }?.let {
+            extra["DEEPSEEK_BASE_URL"] = it
+            LogBus.i(TAG, "本地模型已启用：DEEPSEEK_BASE_URL=$it")
+        }
         val base = RuntimeEnv.base(paths, settings.npmRegistry, settings.heapMb, extra)
         return when (backend) {
             EngineBackend.BIONIC_NATIVE -> base

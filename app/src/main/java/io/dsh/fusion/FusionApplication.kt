@@ -52,7 +52,14 @@ class FusionApplication : Application() {
         // 插件文件由 Provisioner（它有 Context）读出来直接传给内核装配器。
         confirmationGate = ToolConfirmationGate(this).also {
             it.register()
-            FusionRuntime.attachConfirmation(it)
+// 本地模型：一旦推理服务在跑，就把引擎的 DEEPSEEK_BASE_URL 指过去。
+        // 这个 lambda 在每次启动引擎时被调用，所以「先启服务再重启引擎」的顺序天然成立。
+        runCatching {
+            val prov = FusionRuntime.provisioner()
+            FusionRuntime.supervisor().localModelBaseUrl = { prov.llmServer.baseUrl() }
+        }.onFailure { LogBus.w("应用", "本地模型接线失败：${it.message}") }
+
+                    FusionRuntime.attachConfirmation(it)
         }
         startBridge()
         setupDeviceControl()

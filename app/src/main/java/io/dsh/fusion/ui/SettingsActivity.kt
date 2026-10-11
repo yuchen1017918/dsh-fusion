@@ -162,6 +162,7 @@ class SettingsActivity : AppCompatActivity() {
         // ---------------- 插件 ----------------
         column.addView(spaced(UiKit.card(this, "插件", buildPluginBox())))
         column.addView(spaced(UiKit.card(this, "安全模式", buildSafeModeBox())))
+        column.addView(spaced(UiKit.card(this, "本地模型（可选）", buildLocalModelBox())))
 
         // ---------------- 关于 ----------------
         val about = UiKit.text(
@@ -266,6 +267,234 @@ class SettingsActivity : AppCompatActivity() {
                     if (outcome.ok) {
                         io.dsh.fusion.service.EngineService.start(this@SettingsActivity, io.dsh.fusion.service.EngineService.ACTION_RESTART)
                     }
+                    render()
+                }
+                .setNegativeButton("稍后", null)
+                .show()
+        }
+    }
+
+    // ------------------------------------------------------------------ 本地模型
+
+    /**
+     * 本地大模型卡片。
+     *
+     * **全部按需下载，不进 APK**：运行时（llama.cpp 的 llama-server + 8 个 .so，
+     * 约 11 MB）与模型（0.4–2 GB）都是用户点了才下。不用这个功能的人不该为此
+     * 多背十几 MB 的包。
+     *
+     * 启用方式是把引擎的 `DEEPSEEK_BASE_URL` 指到本机推理服务 —— 那是官方
+     * `dsh-llm-deepseek` 认可的正规入口（与之同列的是 `ALL_PROXY`、`CURL_CA_BUNDLE`
+     * 这类「决定进程怎么上网」的变量），所以不需要改官方的设置页，也不需要动
+     * 用户的 cordis.patch.yml。
+     */
+    private fun buildLocalModelBox(): View {
+        val box = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }
+        val prov = FusionRuntime.provisioner()
+        val installer = prov.llmInstaller
+        val server = prov.llmServer
+
+        box.addView(UiKit.text(
+            this,
+            "在手机本地跑一个 OpenAI 兼容的推理服务（llama.cpp），然后把 DSH 指过去。\n" +
+                "**不需要联网、不消耗 API 额度**；代价是模型能力比云端小、速度取决于手机。\n" +
+                "运行时与模型都是点了才下载，不打进安装包。",
+            12.5f, UiKit.TEXT_DIM,
+        ).apply { setPadding(0, 0, 0, UiKit.dp(this@SettingsActivity, 10f)) })
+
+        // ── 状态 ──
+        val runtimeText = if (installer.isInstalled()) {
+            "运行时：已安装（${installer.installedBytes() / 1048576} MB）"
+        } else {
+            "运行时：未安装（需下载 ${installer.downloadBytes() / 1048576} MB，解包后约 ${installer.installedKb() / 1024} MB）"
+        }
+        val serverText = if (server.isRunning) {
+            " · 服务运行中（端口 ${server.port}，" + (if (server.healthCheck()) "协议正常）" else "但健康检查未通过）")
+        } else {
+            " · 服务未启动"
+        }
+        box.addView(UiKit.text(this, runtimeText + serverText, 12.5f,
+            if (server.isRunning) UiKit.ACCENT else UiKit.TEXT)
+            .apply { setPadding(0, 0, 0, UiKit.dp(this@SettingsActivity, 10f)) })
+
+        val models = server.installedModels()
+        if (models.isNotEmpty()) {
+            box.addView(UiKit.text(this, "已下载模型：" + models.joinToString("、") { it.first.title },
+                12f, UiKit.TEXT_DIM).apply { setPadding(0, 0, 0, UiKit.dp(this@SettingsActivity, 8f)) })
+        }
+
+        // ── 按钮 ──
+        val row = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
+        if (!installer.isInstalled()) {
+            row.addView(UiKit.pill(this, "下载运行时", primary = true) { installLlmRuntime() })
+        } else {
+            row.addView(UiKit.pill(this, "选择模型", primary = models.isEmpty()) { showModelPicker() })
+        }
+        row.addView(android.view.View(this).apply {
+            layoutParams = LinearLayout.LayoutParams(UiKit.dp(this@SettingsActivity, 8f), 1)
+        })
+        if (server.isRunning) {
+            row.addView(UiKit.pill(this, "停止服务") {
+                server.stop()
+                Toast.makeText(this, "已停止（引擎下次重启会回到云端模型）", Toast.LENGTH_SHORT).show()
+                render()
+            })
+        } else {
+            row.addView(UiKit.pill(this, "启动服务") { startLocalModel() })
+        }
+        box.addView(row)
+
+        box.addView(UiKit.text(
+            this,
+            "提示：启动服务后需要**重启引擎**才会生效（DSH 在启动时读取端点）。" +
+                "停掉服务并重启引擎即回到云端模型。",
+            11.5f, UiKit.TEXT_DIM,
+        ).apply { setPadding(0, UiKit.dp(this@SettingsActivity, 10f), 0, 0) })
+        return box
+    }
+
+    private fun installLlmRuntime() {
+        lifecycleScope.launch {
+            val prov = FusionRuntime.provisioner()
+            val dlg = AlertDialog.Builder(this@SettingsActivity)
+                .setTitle("正在下载运行时")
+                .setMessage("准备中…")
+                .setNegativeButton("后台继续", null)
+                .create()
+            dlg.show()
+            val outcome = withContext(Dispatchers.IO) {
+                prov.llmInstaller.install { p ->
+                    lifecycleScope.launch {
+                        dlg.setMessage("${p.phase}\n${p.done / 1048576} / ${p.total / 1048576} MB（${(p.ratio * 100).toInt()}%）")
+                    }
+                }
+            }
+            dlg.dismiss()
+            val msg = when (outcome) {
+                is io.dsh.fusion.engine.llm.LlmRuntimeInstaller.Outcome.Ready ->
+                    "运行时已就位（${prov.llmInstaller.installedBytes() / 1048576} MB）。接着去选一个模型。"
+                io.dsh.fusion.engine.llm.LlmRuntimeInstaller.Outcome.NotEnoughSpace ->
+                    "存储空间不足。运行时解包后约 ${prov.llmInstaller.installedKb() / 1024} MB。"
+                is io.dsh.fusion.engine.llm.LlmRuntimeInstaller.Outcome.Failed ->
+                    "安装失败：${outcome.message}\n\n详细过程看控制台。"
+                else -> "安装未完成"
+            }
+            AlertDialog.Builder(this@SettingsActivity)
+                .setTitle("运行时")
+                .setMessage(msg)
+                .setPositiveButton("好", null)
+                .setOnDismissListener { render() }
+                .show()
+        }
+    }
+
+    private fun showModelPicker() {
+        val models = io.dsh.fusion.engine.llm.LocalModelCatalog.MODELS
+        val ramGb = runCatching {
+            val am = getSystemService(android.content.Context.ACTIVITY_SERVICE) as android.app.ActivityManager
+            val mi = android.app.ActivityManager.MemoryInfo().also { am.getMemoryInfo(it) }
+            mi.totalMem / 1073741824.0
+        }.getOrDefault(0.0)
+        val rec = io.dsh.fusion.engine.llm.LocalModelCatalog.recommend(ramGb)
+
+        val labels = models.map { m ->
+            val mark = if (m.id == rec?.id) "（推荐）" else ""
+            "${m.title}$mark\n${m.prettySize} · 建议内存 ≥${m.minRamGb} GB\n${m.note}"
+        }.toTypedArray()
+        AlertDialog.Builder(this)
+            .setTitle("选择模型（本机内存 ${"%.1f".format(ramGb)} GB）")
+            .setItems(labels) { _, which -> downloadModel(models[which]) }
+            .setNegativeButton("取消", null)
+            .show()
+    }
+
+    private fun downloadModel(model: io.dsh.fusion.engine.llm.LocalModelCatalog.LocalModel) {
+        val prov = FusionRuntime.provisioner()
+        val dest = prov.llmServer.modelDir(model)
+        AlertDialog.Builder(this)
+            .setTitle("下载 ${model.title}？")
+            .setMessage(
+                "${model.prettySize}，从 ${if (model.modelScope.contains("modelscope")) "ModelScope" else "镜像"} 下载。" +
+                    "\n\n支持断点续传，中断了再点一次会接着下。" +
+                    "\n\n注意：手机上跑 ${model.params} 模型，速度大概每秒几个字到几十个字，" +
+                    "和云端不是一个量级 —— 适合离线、隐私敏感、或纯粹想试试的场景。",
+            )
+            .setPositiveButton("开始下载") { _, _ ->
+                lifecycleScope.launch {
+                    val dlg = AlertDialog.Builder(this@SettingsActivity)
+                        .setTitle("正在下载 ${model.title}")
+                        .setMessage("…")
+                        .setNegativeButton("后台继续", null)
+                        .create()
+                    dlg.show()
+                    val downloader = io.dsh.fusion.engine.provision.HttpDownloader(listOf(model.modelScope))
+                    val ok = withContext(Dispatchers.IO) {
+                        runCatching {
+                            downloader.to(dest, "", null, model.title) { p ->
+                                lifecycleScope.launch {
+                                    dlg.setMessage("${p.received / 1048576} / ${p.total / 1048576} MB（${p.percent}%）")
+                                }
+                            }
+                            true
+                        }.getOrElse {
+                            LogBus.e("设置", "模型下载失败：${it.message}")
+                            // 主源失败时退到镜像 —— 两个都实测过可用
+                            runCatching {
+                                io.dsh.fusion.engine.provision.HttpDownloader(listOf(model.hfMirror.split("/resolve/")[0]))
+                                    .to(dest, model.fileName, null, model.title) { }
+                                true
+                            }.getOrDefault(false)
+                        }
+                    }
+                    dlg.dismiss()
+                    Toast.makeText(
+                        this@SettingsActivity,
+                        if (ok) "下载完成，可以启动服务了" else "下载失败，看控制台",
+                        Toast.LENGTH_LONG,
+                    ).show()
+                    render()
+                }
+            }
+            .setNegativeButton("取消", null)
+            .show()
+    }
+
+    private fun startLocalModel() {
+        val prov = FusionRuntime.provisioner()
+        val models = prov.llmServer.installedModels()
+        if (models.isEmpty()) {
+            Toast.makeText(this, "先下载一个模型", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val pair = models.first()
+        Toast.makeText(this, "正在加载 ${pair.first.title}（首次加载较慢）…", Toast.LENGTH_LONG).show()
+        lifecycleScope.launch {
+            val port = withContext(Dispatchers.IO) {
+                prov.llmServer.start(pair.second) { line -> LogBus.i("本地模型", line) }
+            }
+            if (port == null || port <= 0) {
+                AlertDialog.Builder(this@SettingsActivity)
+                    .setTitle("启动失败")
+                    .setMessage("推理服务没能起来。到「控制台」看 llama-server 的输出 —— \n" +
+                        "最常见的原因是模型太大被系统杀掉，换小一档试试。")
+                    .setPositiveButton("好", null)
+                    .show()
+                return@launch
+            }
+            val healthy = withContext(Dispatchers.IO) { prov.llmServer.healthCheck() }
+            AlertDialog.Builder(this@SettingsActivity)
+                .setTitle(if (healthy) "本地模型已就绪" else "服务起了但健康检查没过")
+                .setMessage(
+                    "端点：http://127.0.0.1:$port/v1\n\n" +
+                        (if (healthy) {
+                            "现在**重启引擎**让 DSH 用上它。之后对话就走本地模型，不再访问云端。"
+                        } else {
+                            "端口通了但 /v1/models 没返回正常结果。仍可试试重启引擎；" +
+                                "若对话报错，到控制台看具体原因。"
+                        }),
+                )
+                .setPositiveButton("重启引擎") { _, _ ->
+                    io.dsh.fusion.service.EngineService.start(this@SettingsActivity, io.dsh.fusion.service.EngineService.ACTION_RESTART)
                     render()
                 }
                 .setNegativeButton("稍后", null)

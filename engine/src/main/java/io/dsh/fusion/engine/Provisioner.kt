@@ -2,12 +2,15 @@ package io.dsh.fusion.engine
 
 import android.content.Context
 import io.dsh.fusion.engine.provision.DshProvisioner
+import io.dsh.fusion.engine.llm.LlmRuntimeInstaller
+import io.dsh.fusion.engine.llm.LocalModelServer
 import io.dsh.fusion.engine.plugin.SafeMode
 import io.dsh.fusion.engine.provision.KernelBundleProvisioner
 import io.dsh.fusion.engine.provision.NpmProvisioner
 import io.dsh.fusion.engine.provision.PluginManager
 import io.dsh.fusion.engine.provision.UbuntuProvisioner
 import io.dsh.fusion.engine.runtime.ProcessRunner
+import io.dsh.fusion.engine.runtime.ProotLauncher
 import io.dsh.fusion.engine.runtime.RuntimeEnv
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -27,6 +30,7 @@ class Provisioner(
     data class Step(val id: String, val label: String, val done: Boolean, val detail: String = "")
 
     private val runner = ProcessRunner("装配")
+    private val proot = ProotLauncher(paths)
 
     val npm = NpmProvisioner(context, paths)
     val dsh = DshProvisioner(paths, settings, runner)
@@ -45,6 +49,10 @@ class Provisioner(
      * 因为网页挂了它一起挂。桌面版为此做了原生弹窗，我们这里常驻设置页。
      */
     val safeMode = SafeMode(paths.profileDir(FusionPaths.PROFILE_NAME))
+
+    /** 本地大模型：运行时按需下载 + 推理服务进程管理。**都不进 APK。** */
+    val llmInstaller = io.dsh.fusion.engine.llm.LlmRuntimeInstaller(context, paths)
+    val llmServer = io.dsh.fusion.engine.llm.LocalModelServer(paths, runner, proot, llmInstaller)
 
     fun survey(): List<Step> = listOf(
         Step("runtime", "内置运行时（bionic Node 24 + PRoot）", paths.runtimeSeeded(),

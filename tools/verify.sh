@@ -418,6 +418,57 @@ else
   warn "跳过（缺 python3）"
 fi
 
+# ---------------------------------------------------------------- 13. 本地模型（按需下载）
+echo
+echo "── 13. 本地大模型（不进 APK，按需下载）────────────────────"
+LLM="$ROOT/app/src/main/assets/llm/runtime-manifest.json"
+if [ -f "$LLM" ]; then
+  python3 - "$LLM" <<'PYEOF'
+import json, sys
+d = json.load(open(sys.argv[1]))
+pkgs = d.get("packages", [])
+libs = d.get("libraries", [])
+assert pkgs, "清单里没有 packages"
+assert d.get("entry") == "llama-server", "入口不是 llama-server"
+# 「不进 APK」的核心断言：清单里只能有 URL/校验值，不能有任何二进制内容
+for k in ("downloadBytes", "installedKB", "mirror"):
+    assert k in d, f"清单缺 {k}"
+print(f"    包 {len(pkgs)} 个 · 库依赖 {len(libs)} 个 · "
+      f"下载 {d['downloadBytes']/1048576:.1f} MB · 安装后 {d['installedKB']/1024:.1f} MB")
+# 清单必须小到「它才是该进包的东西」
+import os
+size = os.path.getsize(sys.argv[1])
+if size > 64 * 1024:
+    print(f"\033[31m✘\033[0m 清单 {size} 字节 —— 太大了，说明里面混进了不该有的东西")
+    sys.exit(1)
+print(f"\033[32m✔\033[0m 清单只有 {size} 字节（URL 与校验值，无二进制）")
+PYEOF
+  if [ $? -eq 0 ]; then PASS=$((PASS+1)); else FAIL=$((FAIL+1)); fi
+
+  # 目录下不能有任何二进制 —— 这是「不进 APK」的直接检查
+  BIN=$(find "$ROOT/app/src/main/assets/llm" -type f ! -name "*.json" 2>/dev/null | head -5)
+  if [ -n "$BIN" ]; then
+    fail "assets/llm 下有非清单文件（二进制不该进包）：$BIN"
+  else
+    pass "assets/llm 只有清单，无二进制"
+  fi
+else
+  warn "没有 assets/llm/runtime-manifest.json"
+fi
+
+# 接线：DEEPSEEK_BASE_URL 必须真的被注入，否则本地模型跑了也没人用
+if grep -q "DEEPSEEK_BASE_URL" "$ROOT/engine/src/main/java/io/dsh/fusion/engine/EngineSupervisor.kt"; then
+  pass "引擎会注入 DEEPSEEK_BASE_URL（官方认可的端点入口）"
+else
+  fail "没有注入 DEEPSEEK_BASE_URL —— 本地模型服务起了也没人用"
+fi
+if grep -q "Guest.LLM" "$ROOT/engine/src/main/java/io/dsh/fusion/engine/runtime/ProotLauncher.kt"; then
+  pass "LLM 运行时已绑进容器（proot 绕过 W^X，所以不需要 jniLibs）"
+else
+  fail "LLM 运行时没绑进 proot —— 数据目录里的可执行文件跑不起来"
+fi
+check_file "DebExtractor.kt" "$ROOT/engine/src/main/java/io/dsh/fusion/engine/llm/DebExtractor.kt"
+
 # ---------------------------------------------------------------- 汇总
 echo
 echo "═══════════════════════════════════════════════════════════════"

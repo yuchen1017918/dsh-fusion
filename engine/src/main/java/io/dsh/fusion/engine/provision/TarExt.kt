@@ -45,6 +45,7 @@ object TarExt {
         destRoot: File,
         stripComponents: Int,
         onEntry: ((String) -> Unit)?,
+        onlyUnder: String? = null,
     ): Int {
         var count = 0
         var lastReport = 0L
@@ -52,7 +53,14 @@ object TarExt {
         run {
             var entry = tar.nextEntry
             while (entry != null) {
-                val raw = entry.name.trimStart('/')
+                var raw = entry.name.trimStart('/')
+                if (onlyUnder != null) {
+                    if (!raw.startsWith(onlyUnder)) {
+                        entry = tar.nextEntry
+                        continue
+                    }
+                    raw = raw.removePrefix(onlyUnder).trimStart('/')
+                }
                 val rel = strip(raw, stripComponents)
                 if (rel.isNotEmpty()) {
                     val out = File(destDir, rel)
@@ -129,6 +137,14 @@ object TarExt {
         destDir: File,
         stripComponents: Int = 0,
         onEntry: ((String) -> Unit)? = null,
+        /**
+         * 只解这一段的条目（剥掉它之前的部分）。
+         *
+         * deb 里所有文件都裹在 `data/data/com.termux/files/usr/` 下面，
+         * 我们只想要 usr/ 那一层。用它比在调用方手工拼 stripComponents 更不容易错 ——
+         * 数错一层的结果是所有文件都落在错误的位置。
+         */
+        onlyUnder: String? = null,
     ): Int {
         if (!destDir.exists() && !destDir.mkdirs()) {
             throw ExtractException("无法创建目录 ${destDir.absolutePath}")
@@ -152,7 +168,7 @@ object TarExt {
             else -> TarArchiveInputStream(head)
         }
         LogBus.i(TAG, "流式解包 $name -> ${destDir.absolutePath}（格式首字节 ${magic.take(read).joinToString(" ") { "%02X".format(it) }}）")
-        return drain(tar, destDir, destRoot, stripComponents, onEntry)
+        return drain(tar, destDir, destRoot, stripComponents, onEntry, onlyUnder)
     }
 
     private fun strip(path: String, components: Int): String {
