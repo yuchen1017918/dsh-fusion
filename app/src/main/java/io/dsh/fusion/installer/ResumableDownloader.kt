@@ -146,6 +146,12 @@ class ResumableDownloader(
         val remaining = conn.contentLengthLong.takeIf { it > 0 } ?: -1
         val total = if (remaining > 0 && resuming) startAt + remaining else remaining
 
+        // 整段包 try/finally 释放连接。
+        //
+        // 这不是洁癖：**下载中断正是这个类存在的理由**（切后台、锁屏、进隧道）。
+        // 原来 `conn.disconnect()` 写在这段之后 —— 中断时 `input.read` 抛异常，
+        // 那一行永远到不了，于是**每次中断都漏一条连接**。
+        try {
         conn.inputStream.use { input ->
             RandomAccessFile(part, "rw").use { out ->
                 out.seek(startAt)
@@ -169,7 +175,9 @@ class ResumableDownloader(
                 onProgress(Progress(got, total, bps = 0, channel = channelName, attempt = attempt))
             }
         }
-        conn.disconnect()
+        } finally {
+            conn.disconnect()
+        }
 
         // 大小对不上就是没下完，抛出去让外层决定（续传 or 换渠道）
         if (total > 0 && part.length() < total) {

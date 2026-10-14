@@ -42,6 +42,15 @@ class MainActivity : AppCompatActivity() {
     private lateinit var container: LinearLayout
     private val downloader by lazy { ResumableDownloader(catalog.channels) { log(it) } }
 
+    /**
+     * 正在下载的产物 id（null = 空闲）。
+     *
+     * 没有这个守卫时，连点两次「下载」会起**两个协程写同一个 `.part`** ——
+     * 它们各自 `seek` 到自己的位置、各写各的，结果是一个交错在一起的坏文件。
+     * 而 sha256 只能告诉你「坏了」，说不出为什么。
+     */
+    private var downloadingId: String? = null
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
@@ -83,12 +92,26 @@ class MainActivity : AppCompatActivity() {
                 if (conn.responseCode in 200..299) conn.inputStream.bufferedReader().readText() else null
             }.getOrNull()
         }
+        // 拉到了不等于能用 —— 内容可能是半截 JSON，也可能是被劫持的 HTML
+        // （公共 Wi-Fi 的强制门户就是这么干的）。
+        // 原来直接 parse，抛异常会把整个启动协程打断 → **界面永远不渲染**。
+        // 兜底只在「拉取失败」时生效、不在「内容非法」时生效，等于没有兜底。
         if (remote != null) {
-            log("清单已从网络更新")
-            return@withContext ArtifactCatalog.parse(remote)
+            val parsed = runCatching { ArtifactCatalog.parse(remote) }.getOrNull()
+            if (parsed != null) {
+                log("清单已从网络更新")
+                return@withContext parsed
+            }
+            log("远端清单内容非法，改用随包副本")
+        } else {
+            log("网络清单不可用，使用随包副本")
         }
-        log("网络清单不可用，使用随包副本")
-        ArtifactCatalog.parse(assets.open("artifacts.json").bufferedReader().readText())
+        runCatching { ArtifactCatalog.parse(assets.open("artifacts.json").bufferedReader().readText()) }
+            .getOrElse {
+                // 随包副本也坏 = 安装包本身有问题。这时**不能静默**。
+                log("随包清单也读不出来：${it.message}")
+                ArtifactCatalog.parse("{\"schema\":1,\"channels\":[],\"artifacts\":[]}")
+            }
     }
 
     // ------------------------------------------------------------------ 渲染
@@ -213,6 +236,16 @@ class MainActivity : AppCompatActivity() {
     // ------------------------------------------------------------------ 下载
 
     private fun startDownload(a: Artifact) {
+        // 并发守卫：同一个产物只允许一个下载在跑
+        val running = downloadingId
+        if (running != null) {
+            Toast.makeText(
+                this,
+                if (running == a.id) "这个产物正在下载中，别急" else "还有另一个产物的下载没结束",
+                Toast.LENGTH_SHORT,
+            ).show()
+            return
+        }
         if (!a.hasPayload) {
             AlertDialog.Builder(this)
                 .setTitle("这个产物还没发布")
@@ -233,13 +266,19 @@ class MainActivity : AppCompatActivity() {
         container.addView(label)
         container.addView(bar)
 
+        downloadingId = a.id
         lifecycleScope.launch {
-            val result = downloader.download(catalog, a, dir) { p ->
+            val result = try {
+                downloader.download(catalog, a, dir) { p ->
                 runOnUiThread {
                     bar.progress = p.percent
                     val speed = if (p.bps > 0) " · ${humanBytes(p.bps)}/s" else ""
                     label.text = "${p.channel} · ${p.percent}%（${humanBytes(p.received)} / ${humanBytes(p.total)}）$speed"
                 }
+            }
+        } finally {
+                // 无论成功、失败还是取消都要清位，否则一次异常会把按钮永久锁死
+                downloadingId = null
             }
             when (result) {
                 is ResumableDownloader.Result.Ok -> {
