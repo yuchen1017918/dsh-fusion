@@ -1,24 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <style name="Theme.DshFusion" parent="Theme.MaterialComponents.NoActionBar">
-        <item name="colorPrimary">@color/accent</item>
-        <item name="colorPrimaryDark">@color/bg</item>
-        <item name="colorAccent">@color/accent_blue</item>
-        <item name="android:windowBackground">@color/bg</item>
-        <item name="android:statusBarColor">@color/bg</item>
-        <item name="android:navigationBarColor">@color/bg</item>
-        <item name="android:textColorPrimary">@color/text_primary</item>
-        <item name="android:textColorSecondary">@color/text_secondary</item>
-    </style>
-
-    <style name="CardTitle">
-        <item name="android:textColor">@color/text_primary</item>
-        <item name="android:textSize">15sp</item>
-        <item name="android:textStyle">bold</item>
-    </style>
-
-    <style name="CardBody">
-        <item name="android:textColor">@color/text_secondary</item>
-        <item name="android:textSize">13sp</item>
-        <item name="android:lineSpacingExtra">3dp</item>
+    <style name="Theme.DshInstaller" parent="Theme.Material3.DayNight.NoActionBar">
+        <item name="colorPrimary">#2F6BFF</item>
+        <item name="android:statusBarColor">?attr/colorSurface</item>
     </style>
 </resources>

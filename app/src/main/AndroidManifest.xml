@@ -1,160 +1,37 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:tools="http://schemas.android.com/tools">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <!-- 引擎与 WebView 都在回环上，INTERNET 仍然是必须的 -->
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
-
-    <!-- 前台服务保活：Android 14 起必须逐类型声明 -->
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
-    <!-- Android 13+ 不声明这个，前台服务的通知根本不显示，用户会以为程序在偷偷跑 -->
-    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
-    <uses-permission android:name="android.permission.WAKE_LOCK" />
-    <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
-
-    <!-- 离线唤醒 -->
-    <uses-permission android:name="android.permission.RECORD_AUDIO" />
-
-    <!-- 悬窗：桌宠与流体云 -->
-    <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
-
-    <!-- 通知读取：独立的一次授权，用户不开就完全不采集 -->
-    <uses-permission android:name="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE"
-        tools:ignore="ProtectedPermissions" />
-
-    <!--
-      文件能力：DSH 的 fs 工具需要能碰真实路径。
-      走 MANAGE_EXTERNAL_STORAGE 而不是 SAF，是因为 SAF 给的是 Uri 不是路径，
-      而模型要的是路径。此为旁加载应用，不上架，用户可在设置里单独授权。
-    -->
-    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE"
-        tools:ignore="ScopedStorage" />
-    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"
-        android:maxSdkVersion="32" />
-    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"
-        android:maxSdkVersion="29" />
-
-    <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES"
-        tools:ignore="QueryAllPackagesPermission" />
-
-    <!-- 只支持 arm64：内置运行时是 bionic arm64 的 Node 与 PRoot -->
-    <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
-
-    <queries>
-        <package android:name="moe.shizuku.privileged.api" />
-        <intent>
-            <action android:name="android.intent.action.VIEW" />
-            <data android:scheme="https" />
-        </intent>
-    </queries>
+    <!-- 安装下载好的 APK。Android 8.0+ 必须显式声明，否则调起系统安装器会被拒。 -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
     <application
-        android:name=".FusionApplication"
         android:allowBackup="false"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
-        android:largeHeap="true"
-        android:requestLegacyExternalStorage="true"
         android:supportsRtl="true"
-        android:theme="@style/Theme.DshFusion"
-        android:usesCleartextTraffic="true"
-        android:extractNativeLibs="true"
-        tools:targetApi="34">
+        android:theme="@style/Theme.DshInstaller">
 
         <activity
-            android:name=".ui.MainActivity"
+            android:name=".MainActivity"
             android:exported="true"
-            android:launchMode="singleTask"
-            android:configChanges="orientation|screenSize|keyboardHidden|uiMode"
-            android:windowSoftInputMode="adjustResize">
+            android:configChanges="orientation|screenSize|keyboardHidden">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
 
-        <activity
-            android:name=".ui.SetupActivity"
-            android:exported="false"
-            android:label="@string/setup_title" />
-
-        <activity
-            android:name=".ui.ConsoleActivity"
-            android:exported="false"
-            android:label="@string/console_title"
-            android:launchMode="singleTop" />
-
-        <activity
-            android:name=".ui.SettingsActivity"
-            android:exported="false"
-            android:label="@string/settings_title" />
-
-        <activity
-            android:name=".ui.DoctorActivity"
-            android:exported="false"
-            android:label="@string/doctor_title" />
-
-        <!-- 引擎前台服务：specialUse（Android 14 要求的显式类型） -->
-        <service
-            android:name=".service.EngineService"
-            android:exported="false"
-            android:foregroundServiceType="specialUse">
-            <property
-                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
-                android:value="Embedded developer runtime: keeps the local DSH engine and its bridge alive while the user works." />
-        </service>
-
-        <!-- 离线唤醒：要麦克风 -->
-        <service
-            android:name="io.dsh.fusion.voice.WakeWordService"
-            android:exported="false"
-            android:foregroundServiceType="microphone" />
-
-        <!-- 桌宠与流体云 -->
-        <service
-            android:name="io.dsh.fusion.overlay.FloatingBallService"
-            android:exported="false"
-            android:foregroundServiceType="specialUse">
-            <property
-                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
-                android:value="User-enabled floating assistant bubble and transient reply capsule." />
-        </service>
-
-        <!-- 无障碍：免 root 的手势 / 读屏 / 输入 -->
-        <service
-            android:name="io.dsh.fusion.devicectl.FusionAccessibilityService"
-            android:exported="true"
-            android:label="@string/accessibility_label"
-            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
-            <intent-filter>
-                <action android:name="android.accessibilityservice.AccessibilityService" />
-            </intent-filter>
-            <meta-data
-                android:name="android.accessibilityservice"
-                android:resource="@xml/accessibility_service_config" />
-        </service>
-
-        <!-- 通知读取 -->
-        <service
-            android:name="io.dsh.fusion.devicectl.FusionNotificationListener"
-            android:exported="true"
-            android:label="@string/notification_listener_label"
-            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
-            <intent-filter>
-                <action android:name="android.service.notification.NotificationListenerService" />
-            </intent-filter>
-        </service>
-
-        <!-- Shizuku 的授权中转 Provider（不装 Shizuku 也完全不影响启动） -->
+        <!-- 下载好的 APK 在应用私有目录，要交给系统安装器必须先经 FileProvider 授权 -->
         <provider
-            android:name="rikka.shizuku.ShizukuProvider"
-            android:authorities="${applicationId}.shizuku"
-            android:enabled="true"
-            android:exported="true"
-            android:multiprocess="false"
-            android:permission="android.permission.INTERACT_ACROSS_USERS_FULL" />
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.files"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
     </application>
 </manifest>

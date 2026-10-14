@@ -1,0 +1,82 @@
+{
+  "schema": 1,
+  "note": "产物清单。安装器读它来决定该给这台设备下什么。本文件由 tools/gen-catalog.py 从真实产物生成，不要手改数字。",
+  "updatedAt": "2026-10-14",
+  "channels": [
+    {
+      "id": "github",
+      "name": "GitHub Releases",
+      "kind": "github",
+      "base": "https://github.com/yuchen1017918/dsh-fusion/releases/download",
+      "priority": 10,
+      "note": "境外，国内速度不稳但一定在"
+    },
+    {
+      "id": "ghproxy",
+      "name": "GitHub 加速（ghproxy）",
+      "kind": "prefix",
+      "base": "https://ghfast.top/https://github.com/yuchen1017918/dsh-fusion/releases/download",
+      "priority": 20,
+      "note": "国内加速，优先试"
+    },
+    {
+      "id": "jsdelivr",
+      "name": "jsDelivr",
+      "kind": "prefix",
+      "base": "https://cdn.jsdelivr.net/gh/yuchen1017918/dsh-fusion@releases",
+      "priority": 30,
+      "note": "只适合小文件（有体积上限）"
+    }
+  ],
+  "artifacts": [
+    {
+      "id": "android-arm64-full",
+      "name": "DSH Fusion 完整版（arm64）",
+      "branch": "full-bundled",
+      "platform": "android",
+      "abi": "arm64-v8a",
+      "minApi": 26,
+      "minRamGb": 3.0,
+      "minStorageMb": 1500,
+      "kind": "apk",
+      "version": "1.2.0",
+      "fileName": "DSH-Fusion-v1.2-arm64.apk",
+      "bytes": 0,
+      "sha256": "",
+      "note": "手机主力档。自带 Node/PRoot 运行时与官方内核树，装上即用。"
+    },
+    {
+      "id": "android-x86_64-full",
+      "name": "DSH Fusion 完整版（x86_64）",
+      "branch": "full-bundled",
+      "platform": "android",
+      "abi": "x86_64",
+      "minApi": 26,
+      "minRamGb": 4.0,
+      "minStorageMb": 1500,
+      "kind": "apk",
+      "version": "1.2.0",
+      "fileName": "DSH-Fusion-v1.2-x86_64.apk",
+      "bytes": 0,
+      "sha256": "",
+      "note": "给模拟器与应用宝电脑版。注意：本地大模型功能在 x86_64 上不可用（llama.cpp 只有 aarch64 包）。"
+    },
+    {
+      "id": "harmonyos-next",
+      "name": "纯血鸿蒙版（由社区提供）",
+      "branch": null,
+      "platform": "harmonyos-next",
+      "abi": null,
+      "minApi": null,
+      "minRamGb": 6.0,
+      "minStorageMb": 2000,
+      "kind": "external",
+      "version": null,
+      "fileName": null,
+      "bytes": 0,
+      "sha256": "",
+      "externalUrl": "https://github.com/sol5766/dshm/releases",
+      "note": "纯血鸿蒙原生不运行 APK，本项目的产物装不上。社区已有成熟实现（dshm，已签名 HAP，支持手机/折叠/平板/2in1），这里只做引导。"
+    }
+  ]
+}

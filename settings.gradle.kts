@@ -1,23 +1,18 @@
 pluginManagement {
     repositories {
+        maven("https://maven.aliyun.com/repository/gradle-plugin")
+        maven("https://maven.aliyun.com/repository/public")
         google()
         mavenCentral()
         gradlePluginPortal()
-        maven("https://maven.aliyun.com/repository/public")
     }
 }
 dependencyResolutionManagement {
-    repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
     repositories {
+        maven("https://maven.aliyun.com/repository/public")
         google()
         mavenCentral()
-        maven("https://maven.aliyun.com/repository/public")
-        maven("https://mirrors.tencent.com/nexus/repository/maven-public/")
     }
 }
-rootProject.name = "dsh-fusion"
+rootProject.name = "dsh-fusion-installer"
 include(":app")
-include(":engine")
-include(":devicectl")
-include(":voice")
-include(":overlay")

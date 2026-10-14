@@ -1,17 +1,14 @@
-本目录是随包分发的第三方许可证全文。
+本目录里的许可证分两类，别混淆：
 
-哪些组件对应哪个许可证，见仓库根目录的 THIRD-PARTY-NOTICES.md。
+── 一、安装器自身用到的（随本 APK 分发）────────────────────
+  Apache-2.0.txt   AndroidX · Material Components · Kotlin stdlib
+                   · kotlinx-coroutines
+  MIT.txt          本安装器的代码
 
-  GPL-2.0.txt       PRoot（libproot.so / libproot-loader.so / libproot-loader32.so）
-                    注意：我们修改过这三个二进制（归一化 SONAME），
-                    修改的完整披露见 THIRD-PARTY-NOTICES.md 第 3.3 节
-  LGPL-3.0.txt      libtalloc.so（Samba talloc）
-  Apache-2.0.txt    OpenSSL（libcrypto/libssl）· Vosk · LLVM libc++
-  MIT.txt           Node.js · c-ares · 本应用自身代码
-  BSD-3-Clause.txt  （备用）
-  ISC.txt           libandroid-shmem
-  Zlib.txt          libz
-  MPL-2.0.txt       内核包中的 1 个依赖
+── 二、安装器「下载下来的产物」会用到的（本 APK 不含这些代码）──
+  GPL-2.0.txt      PRoot —— full-bundled 分支产物里的核心组件
+  LGPL-3.0.txt     libtalloc —— 同上
 
-内核树里 533 个 npm 依赖的许可证文本已随 assets/kernel 内的包一起分发，
-不在本目录重复。
+  为什么安装器里要放这两份：安装器负责把这些产物交给用户，
+  用户有权知道他要装的东西受什么许可约束。完整说明见仓库根的
+  THIRD-PARTY-NOTICES.md（在 full-bundled 分支上）。

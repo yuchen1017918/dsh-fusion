@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>DSH Fusion · 选择你要装的东西</title>
+<style>
+  :root{
+    --bg:#0a0d13; --card:#131a26; --line:#1e2a3e;
+    --txt:#e8f0fb; --dim:#8fa3bf; --acc:#4d8dff; --ok:#3ddc97; --warn:#ffc24b; --bad:#ff6b6b;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{
+    background:radial-gradient(1100px 620px at 50% -12%,#16233c 0%,#0a0d13 62%);
+    color:var(--txt);font:15px/1.7 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;
+    min-height:100vh;padding:34px 18px 64px;
+  }
+  .wrap{max-width:660px;margin:0 auto}
+  header{margin-bottom:26px}
+  h1{font-size:25px;font-weight:650;letter-spacing:-.2px;
+     background:linear-gradient(96deg,#eaf2ff 8%,#8fb8ff 92%);
+     -webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}
+  .sub{color:var(--dim);font-size:13.5px;margin-top:7px}
+  .card{
+    background:linear-gradient(158deg,rgba(30,42,62,.62),rgba(19,26,38,.94));
+    border:1px solid var(--line);border-radius:15px;padding:19px 21px;margin-bottom:13px;
+    box-shadow:0 1px 0 rgba(255,255,255,.035) inset,0 12px 34px -22px rgba(0,0,0,.95);
+  }
+  .card.hit{border-color:#1e4436;background:linear-gradient(158deg,rgba(20,54,42,.55),rgba(19,26,38,.94))}
+  .card.no{border-left:3px solid var(--bad)}
+  .card.wa{border-left:3px solid var(--warn);background:linear-gradient(158deg,rgba(60,46,14,.4),rgba(19,26,38,.94))}
+  h2{font-size:16px;font-weight:600;margin-bottom:9px;display:flex;align-items:center;gap:8px}
+  .badge{font-size:10.5px;font-weight:600;padding:2.5px 8px;border-radius:20px;letter-spacing:.4px}
+  .b-ok{background:rgba(61,220,151,.16);color:var(--ok)}
+  .b-no{background:rgba(255,107,107,.15);color:var(--bad)}
+  .b-wa{background:rgba(255,194,75,.16);color:var(--warn)}
+  p{color:#b9c7db;font-size:13.5px}
+  p+p{margin-top:8px}
+  .kv{display:grid;grid-template-columns:82px 1fr;gap:6px 12px;font-size:13px;margin-top:11px}
+  .kv dt{color:var(--dim)}
+  .kv dd{color:#d7e3f4}
+  a.btn,button.btn{
+    display:block;width:100%;text-align:center;text-decoration:none;cursor:pointer;
+    background:linear-gradient(#4d8dff,#2f6bff);color:#fff;border:0;border-radius:11px;
+    padding:13px;font-size:14.5px;font-weight:600;margin-top:13px;
+    box-shadow:0 8px 22px -11px rgba(77,141,255,.9);transition:filter .16s,transform .16s;
+    font-family:inherit;
+  }
+  a.btn:hover,button.btn:hover{filter:brightness(1.1)}
+  a.btn:active,button.btn:active{transform:translateY(1px)}
+  a.ghost{display:block;text-align:center;text-decoration:none;color:var(--acc);
+    border:1px solid var(--line);border-radius:11px;padding:11px;font-size:13.5px;margin-top:9px;
+    background:rgba(255,255,255,.02)}
+  code{background:#0e1622;color:#8fd6ff;padding:2px 6px;border-radius:5px;font-size:12px;
+    font-family:"SF Mono",Consolas,monospace;word-break:break-all}
+  ul{margin:9px 0 0 17px;color:#b9c7db;font-size:13.5px}
+  li{margin-bottom:5px}
+  .foot{margin-top:26px;color:#61748f;font-size:12px;text-align:center;line-height:1.9}
+  .sec{font-size:11.5px;color:var(--acc);letter-spacing:.12em;font-weight:600;margin:22px 0 9px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>DSH Fusion</h1>
+    <div class="sub">先看这台设备是什么，再决定装什么。<b>装错了不会更糟，只是白下。</b></div>
+  </header>
+
+  <div id="env" class="card">
+    <h2>检测到的环境</h2>
+    <dl class="kv" id="envkv"><dt>…</dt><dd>正在检测</dd></dl>
+  </div>
+
+  <div id="verdict"></div>
+
+  <div class="sec">全部产物</div>
+  <div id="all"></div>
+
+  <div class="foot">
+    <div>这个页面不下载任何东西，只负责告诉你该去哪下。</div>
+    <div>装不上时的报错信息，欢迎提到 <a href="https://github.com/yuchen1017918/dsh-fusion/issues" style="color:#61748f">Issues</a>。</div>
+  </div>
+</div>
+
+<script>
+// ── 环境检测 ─────────────────────────────────────────────────────────────
+// 网页能拿到的东西比 APK 少得多：没有 Build.ABI、没有内存、没有 API level。
+// 但**恰好能判定最要命的那个问题** —— 纯血鸿蒙跑不了 APK，
+// 而这种情况 APK 版安装器自己也装不上，只有网页能救。
+const ua = navigator.userAgent;
+const uad = (navigator.userAgentData && navigator.userAgentData.platform) || '';
+const isAndroid = /Android/i.test(ua) || /Android/i.test(uad);
+const isHarmony = /HarmonyOS|OpenHarmony|HongMeng|HMSCore/i.test(ua);
+const harmonyNext = isHarmony && /HarmonyOS\s*[5-9]|OpenHarmony/i.test(ua) && !/Android/i.test(ua);
+const isIOS = /iPhone|iPad|iPod/i.test(ua);
+const isDesktop = !isAndroid && !isIOS && !harmonyNext;
+
+// 鸿蒙的浏览器 UA 里带 Android 兼容串，所以上面用 "!/Android/" 兜一层：
+// 只有「带鸿蒙标识但**不带** Android」才是纯血鸿蒙。
+const env = {
+  harmonyNext,
+  isAndroid,
+  isIOS,
+  isDesktop,
+  ua: ua.slice(0, 120),
+};
+
+function row(k, v){ return `<dt>${k}</dt><dd>${v}</dd>`; }
+
+document.getElementById('envkv').innerHTML =
+  row('设备类型', harmonyNext ? '纯血鸿蒙（HarmonyOS NEXT）' :
+      isAndroid ? 'Android' : isIOS ? 'iOS / iPadOS' : '桌面浏览器') +
+  row('标识', `<code>${env.ua}</code>`);
+
+// ── 结论 ────────────────────────────────────────────────────────────────
+const REPO = 'https://github.com/yuchen1017918/dsh-fusion';
+const RELEASES = REPO + '/releases';
+const v = document.getElementById('verdict');
+const all = document.getElementById('all');
+
+if (harmonyNext) {
+  v.innerHTML = `
+    <div class="card no">
+      <h2><span class="badge b-no">装不上</span>纯血鸿蒙原生不运行 Android APK</h2>
+      <p>你这台是 <b>HarmonyOS NEXT（纯血鸿蒙）</b> 线。它和 HarmonyOS 4.x 及更早是两套应用模型 ——
+         后者能装 APK，前者不能。</p>
+      <p>而且这里有个死结：<b>我们的安装器本身也是 APK，同样装不上。</b>
+         所以你只能走网页这条路（也就是你现在看到的）。</p>
+    </div>
+    <div class="card hit">
+      <h2><span class="badge b-ok">推荐</span>去装社区的鸿蒙原生版</h2>
+      <p>社区已经有成熟的纯血鸿蒙实现 <b>dshm</b>：自带 Node 运行时与 dsh 核心树、
+         已签名的 <code>.hap</code>、支持手机 / 折叠屏 / 平板 / 2in1。</p>
+      <dl class="kv">
+        <dt>包体</dt><dd>约 306 MB（自带运行时，装上即用）</dd>
+        <dt>核心</dt><dd>比本项目用的还新</dd>
+        <dt>安装</dt><dd>下载已签名的 hap 后按提示装</dd>
+      </dl>
+      <a class="btn" href="https://github.com/sol5766/dshm/releases" target="_blank" rel="noopener">去 dshm 的 Releases 下载</a>
+      <a class="ghost" href="https://github.com/hnmrxz/deepseek-harness-desktop-HarmonyOS" target="_blank" rel="noopener">另一个选择：HDSH（手机态用 ArkTS 原生复刻）</a>
+      <p style="margin-top:11px;font-size:12.5px;color:#8fa3bf">
+        本项目在纯血鸿蒙上<b>不做实现</b> —— 社区已经做得更深（有真机、有自建 jitless Node、踩过了签名域与 hmfs 的坑）。
+        我们只负责把你指对地方。</p>
+    </div>`;
+} else if (isAndroid) {
+  v.innerHTML = `
+    <div class="card hit">
+      <h2><span class="badge b-ok">推荐</span>装安装器，让它自己挑</h2>
+      <p>先装一个 <b>5 MB 的安装器</b>。它会读你的架构、系统版本、内存和可用存储，
+         然后从多个渠道<b>断点续传</b>拉取对应的产物 —— 断网了再点一次会接着下，不会从 0 重来。</p>
+      <p style="margin-top:9px">这样你只需要下<b>真正适合你这台机器的那一份</b>，而不是先背一个通用大包。</p>
+      <a class="btn" href="https://github.com/yuchen1017918/dsh-fusion/releases" target="_blank" rel="noopener">去 Releases 下载安装器</a>
+      <p style="margin-top:11px;font-size:12.5px;color:#8fa3bf">
+        已经有安装器了？直接打开它，它会自己更新清单。</p>
+    </div>
+    <div class="card wa">
+      <h2><span class="badge b-wa">注意</span>如果你在模拟器 / 应用宝电脑版里</h2>
+      <p>本项目的核心引擎依赖 <b>PRoot</b>（Linux <code>ptrace</code>）。
+         在 VirtualBox 里的安卓这类环境中，<code>ptrace</code> 未必被放行，
+         引擎可能起不来。安装器会探测并提醒你，但这属于<b>环境限制，不是安装包的问题</b>。</p>
+      <p style="margin-top:8px">另外：<b>本地大模型功能在 x86_64 上不可用</b>（llama.cpp 只有 aarch64 的构建）。云端模型不受影响。</p>
+    </div>`;
+} else if (isIOS) {
+  v.innerHTML = `
+    <div class="card no">
+      <h2><span class="badge b-no">不支持</span>iOS 装不了</h2>
+      <p>本项目的产物是 Android APK 与鸿蒙 HAP，<b>都不适用于 iOS</b>。
+         iOS 不允许侧载这类需要执行原生运行时的应用。</p>
+      <p>能用的只有官方 DSH 的桌面端与 CLI。</p>
+    </div>`;
+} else {
+  v.innerHTML = `
+    <div class="card wa">
+      <h2><span class="badge b-wa">桌面浏览器</span>你是想装在手机上吗？</h2>
+      <p>如果你在电脑上打开了这个页面，那它检测的是<b>这台电脑</b>，给不出手机的建议。
+         用手机扫码或直接打开这个页面的地址，才会给出手机该装什么。</p>
+      <p style="margin-top:9px">如果你就是要在电脑上跑安卓应用：可以用<b>应用宝电脑版</b>之类的 x86 安卓虚拟机，
+         装 x86_64 版的产物。但注意上一条卡片里关于 PRoot 的提醒。</p>
+      <a class="ghost" href="${RELEASES}" target="_blank" rel="noopener">还是要去 Releases 看看</a>
+    </div>`;
+}
+
+// ── 产物清单（从仓库拉）───────────────────────────────────────────────
+const CATALOGS = [
+  'https://raw.githubusercontent.com/yuchen1017918/dsh-fusion/main/catalog/artifacts.json',
+  'https://cdn.jsdelivr.net/gh/yuchen1017918/dsh-fusion@main/catalog/artifacts.json',
+];
+(async () => {
+  let cat = null;
+  for (const u of CATALOGS) {
+    try { const r = await fetch(u, {cache:'no-store'}); if (r.ok) { cat = await r.json(); break; } } catch (_) {}
+  }
+  if (!cat) { all.innerHTML = '<div class="card"><p>清单拉取失败（网络或 CORS）。直接去 Releases 页面即可。</p></div>'; return; }
+  const fmt = b => b >= 1e9 ? (b/1e9).toFixed(2)+' GB' : b >= 1e6 ? (b/1e6).toFixed(1)+' MB' : b > 0 ? (b/1e3).toFixed(0)+' KB' : '未发布';
+  all.innerHTML = cat.artifacts.map(a => {
+    const ext = a.kind === 'external';
+    return `<div class="card">
+      <h2>${a.name} <span class="badge ${ext ? 'b-wa' : a.bytes ? 'b-ok' : 'b-no'}">${ext ? '外部' : a.bytes ? '可用' : '未发布'}</span></h2>
+      <dl class="kv">
+        <dt>平台</dt><dd>${a.platform}${a.abi ? ' · ' + a.abi : ''}</dd>
+        <dt>大小</dt><dd>${fmt(a.bytes)}</dd>
+        ${a.branch ? `<dt>来源分支</dt><dd><code>${a.branch}</code></dd>` : ''}
+        ${a.externalUrl ? `<dt>地址</dt><dd><a href="${a.externalUrl}" style="color:#4d8dff" target="_blank" rel="noopener">${a.externalUrl}</a></dd>` : ''}
+      </dl>
+      <p style="margin-top:9px">${a.note || ''}</p>
+    </div>`;
+  }).join('');
+})();
+</script>
+</body>
+</html>

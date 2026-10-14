@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <!-- 只暴露下载目录，不暴露整个私有空间 -->
+    <external-files-path name="downloads" path="downloads/" />
+    <files-path name="files" path="downloads/" />
+</paths>
