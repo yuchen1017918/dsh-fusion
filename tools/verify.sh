@@ -646,6 +646,57 @@ else
   fail "engine 缺 androidx.webkit 依赖"
 fi
 
+# ---------------------------------------------------------------- 16. 语音后端（官方栈 + Android 后端）
+echo
+echo "── 16. 语音：官方栈保留 + Android 后端 ─────────────────"
+SP="$ROOT/plugins/dsh-fusion-speech-android"
+check_file "语音后端插件 index.js" "$SP/lib/index.js"
+check_file "原生转写 VoiceTranscriber.kt" "$ROOT/voice/src/main/java/io/dsh/fusion/voice/VoiceTranscriber.kt"
+check_file "原生工具 VoiceTools.kt" "$ROOT/voice/src/main/java/io/dsh/fusion/voice/VoiceTools.kt"
+
+# 关键：必须走官方留的注册点，而不是改官方插件
+if grep -q "ctx.speechToText.register" "$SP/lib/index.js"; then
+  pass "语音后端走官方注册点（ctx.speechToText.register）—— 官方插件一行未改"
+else
+  fail "没有走官方注册点 —— 那就变成改官方插件了"
+fi
+
+# 桥的请求体字段名：原生侧读 body.id，写成 name 会报「缺少 id」
+if grep -q "JSON.stringify({ id, args })" "$SP/lib/index.js"; then
+  pass "桥请求体字段名与原生一致（body.id）"
+else
+  fail "桥请求体字段名与原生不一致 —— 原生会报「缺少 id」，而错误不会指出是哪个字段"
+fi
+
+# 工具名两侧必须一致
+if grep -q "android_voice_transcribe" "$SP/lib/index.js" &&    grep -q "android_voice_transcribe" "$ROOT/voice/src/main/java/io/dsh/fusion/voice/VoiceTools.kt"; then
+  pass "语音工具名两侧一致（android_voice_transcribe）"
+else
+  fail "语音工具名两侧不一致 —— 插件调不到原生的转写能力"
+fi
+
+# 插件必须随包，否则设备上装不上
+if [ -d "$ROOT/app/src/main/assets/plugins/dsh-fusion-speech-android" ]; then
+  pass "语音后端插件已随包（assets/plugins/）"
+else
+  fail "语音后端插件没随包 —— 设备上不会被安装"
+fi
+
+# 语音插件必须在 BUNDLED_PLUGINS 里（装了 ≠ 生效）
+if grep -q '"dsh-fusion-speech-android"' "$ROOT/engine/src/main/java/io/dsh/fusion/engine/Provisioner.kt"; then
+  pass "语音插件在 BUNDLED_PLUGINS 里（装了 ≠ 生效，还要注册进 bundles）"
+else
+  fail "语音插件不在 BUNDLED_PLUGINS 里 —— 铺了文件也不会被加载"
+fi
+
+# 许可证：参考的社区语音插件都是 MIT，我们自己也必须是宽松许可
+LIC=$(python3 -c "import json;print(json.load(open('$SP/package.json'))['license'])" 2>/dev/null || echo "?")
+if [ "$LIC" = "MIT" ]; then
+  pass "语音插件许可证 = MIT"
+else
+  warn "语音插件许可证是 $LIC（参考的社区实现均为 MIT）"
+fi
+
 # ---------------------------------------------------------------- 汇总
 echo
 echo "═══════════════════════════════════════════════════════════════"

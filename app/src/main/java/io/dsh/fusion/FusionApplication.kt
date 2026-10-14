@@ -117,6 +117,22 @@ class FusionApplication : Application() {
                     return
                 }
                 deviceManager.registerTools()
+
+                // 语音转写：把设备本地的 Vosk 挂上能力桥，
+                // 官方 speech-to-text 抽象层的 Android 后端要靠它。
+                runCatching {
+                    io.dsh.fusion.voice.VoiceTools.modelDirProvider = {
+                        val paths = FusionRuntime.paths()
+                        // 挑**已经装好的**那个模型，而不是写死中文小模型 ——
+                        // 用户可能只下了英文的；写死会让「明明下过却提示没下」。
+                        // 中文优先（这个应用的用户群以中文为主）。
+                        io.dsh.fusion.voice.VoiceModels.all
+                            .firstOrNull { io.dsh.fusion.voice.VoiceModels.installed(paths, it) }
+                            ?.let { io.dsh.fusion.voice.VoiceModels.modelDir(paths, it) }
+                    }
+                    io.dsh.fusion.voice.VoiceTools.registerAll()
+                }.onFailure { LogBus.w("应用", "语音转写能力注册失败：${it.message}") }
+
                 refreshToolManifest()
             }
 

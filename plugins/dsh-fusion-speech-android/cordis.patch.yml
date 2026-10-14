@@ -1,0 +1,7 @@
+# 把 Android 本地语音后端挂进 profile。
+#
+# 注意这里**只加不改**：官方的 speech-to-text 抽象层与 voice-input UI
+# 一行都不动，我们只是在它留的注册点上补一个能在 Android 上跑的后端。
+- insert:
+    - id: fusion-speech-android
+      name: dsh-fusion-speech-android

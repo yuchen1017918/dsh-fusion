@@ -1,0 +1,15 @@
+{
+  "name": "dsh-fusion-speech-android",
+  "version": "0.1.0",
+  "description": "Android 原生语音识别后端：把官方 speech-to-text 抽象接到设备本地的 Vosk 上。官方插件一行不改 —— 走的是官方留的 ctx.speechToText.register() 注册点。",
+  "type": "module",
+  "main": "./lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/index.js"
+  },
+  "license": "MIT",
+  "peerDependencies": {
+    "@deepseek-ai/dsh-experimental-speech-to-text": "*"
+  }
+}

@@ -311,7 +311,13 @@ class Provisioner(
         const val TAG = "装配"
 
         /** 随包发货的本地插件（assets/plugins/<name>/ 下的目录名）。 */
-        val BUNDLED_PLUGINS = listOf("dsh-mobile-layout")
+        val BUNDLED_PLUGINS = listOf(
+            "dsh-mobile-layout",
+            // Android 原生语音后端。官方语音栈里的本地后端（SenseVoice）依赖
+            // sherpa-onnx，而 sherpa 没有 android/bionic 的任何构建 ——
+            // 所以这里补一个走 Vosk 的后端，官方插件一行不改。
+            "dsh-fusion-speech-android",
+        )
 
         /**
          * pnpm 的版本。
