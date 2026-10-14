@@ -1,5 +1,10 @@
 # DSH Fusion · 融合版 Android
 
+> **你在 `full-bundled` 分支。** 这是**完整的应用**（108 MB，自带运行时与内核树）。
+> 仓库的 [`main`](https://github.com/yuchen1017918/dsh-fusion/tree/main) 分支是一个
+> **5 MB 的安装器** —— 它探测设备后按需拉取对应分支的产物，安装器自己不含任何实现。
+> 其他分支见 [docs/BRANCHES.md](docs/BRANCHES.md)。
+
 把社区里 15 个 DSH 安卓方案的长处收进一个 APK：**预置运行时、完整 Linux 环境、离线语音、全设备控制、自更新**，
 一套代码两条运行时路线，装机即用。
 
@@ -253,6 +258,16 @@ APK 里同时带了 `arm64-v8a` 与 `x86_64` 两套运行时，所以**在 x86_6
 > 全部经能力桥注册给引擎。
 
 ---
+
+### `engine/.../desktop/` —— 侧边栏浏览器（第十一节）
+
+| 文件 | 作用 | 行数 |
+|---|---|---|
+| `DesktopCarrier.kt` | 用官方 API 注入载体 + **金丝雀判定** | 266 |
+| `DesktopBrowserHost.kt` | JS 桥 + 原生 WebView 承载与定位 | 326 |
+| `app/src/main/assets/host/desktop-carrier.js` | 挂 `dshDesktop` + polyfill `<webview>` + getter 陷阱 | 406 |
+
+**没有 `LocalProxy.kt`** —— 那条路已被官方注入 API 取代，见第十一节。
 
 ## 四、从零构建
 
@@ -512,85 +527,95 @@ AGP 自带 `splits { abi { ... } }`，一次构建出两个 APK：
 
 ---
 
-## 十一、形态定位与「桌面版架构」的真实障碍
+## 十一、侧边栏浏览器（桌面宿主载体 + 金丝雀）
 
-### 先破一个混淆：「桌面版」不是「原生 UI 重写」
+官方客户端有**两条宿主分支**，只看一个全局对象：
 
-DSH 官方的**桌面版本质上也是套壳**——Electron 加载官方 Web UI，preload 注入宿主能力，
-一行 UI 都没重写：
-
-```
-apps/desktop/src/web-document.ts   → 提供 index 文档（官方 Web dist）
-apps/desktop/src/preload-app.ts    → 注入 dshDesktop carrier
-apps/desktop/src/host-process.ts   → 起一个 dsh-desktop-host 子进程
+```js
+const carrier = globalThis.dshDesktop
+const desktop = carrier?.protocolVersion === 1 ? carrier.browser : undefined
+if (desktop === undefined) installFrames(...)        // 侧边栏浏览器 → iframe 降级
+else                        createElectronPage(...)  // 侧边栏浏览器 → 真 WebView + 真标签页
 ```
 
-所以「套壳 vs 桌面版」这个说法本身是错位的。真实的选择是**三个独立的轴**：
+挂上 `dshDesktop` 就能拿到后者，**官方客户端一行都不用改**。
 
-| 轴 | 选项 A | 选项 B | 本项目的判断 |
-|---|---|---|---|
-| **① UI 来源** | 官方 Web UI（WebView 渲染） | 原生 Kotlin 重写 | **永远 A** —— 重写等于放弃「跟随官方」，把项目从**适配层**变成**复刻层** |
-| **② 宿主形态** | 直连引擎（纯套壳） | 冒充桌面宿主（carrier + 代理 + polyfill） | **A 为主**，B 做成可开关实验（`experiment/desktop-architecture`） |
-| **③ 外围能力** | 全塞进 WebView | 原生实现（设置 / 体检 / 控制台 / 悬浮球 / 安全模式） | **B —— 最该投入**，因为这是「能不能用」而不是「好不好用」 |
+### 注入用的是官方 API，不是本地代理
 
-拿最近三件事对号入座就很清楚：
+`WebViewCompat.addDocumentStartJavaScript`（androidx.webkit，本项目用 1.11.0）。
+它的签名很干净：返回一个 `ScriptHandler`，而它**只有一个 `remove()`** ——
+撤销就是它自己。
 
-- **移动端布局插件**（第十三节）属于**轴①的适配层**：让官方 UI 在手机上可用，**而不改官方源码**；
-- **安全模式**（第十二节）属于**轴③**：桌面版有它是因为 Electron 主进程是宿主，**不是因为桌面架构**；
-- **桌面架构实验分支**属于**轴②**：我在这上面花过 998 行，但它属于「好不好用」，
-  优先级低于轴③的「能不能用」——**这是我一次真实的优先级误判**。
-
----
-
-三种形态，差别不在「谁重写了 UI」，而在**宿主有没有满足官方客户端期待的宿主契约**。
-
-| 形态 | 侧边栏浏览器 | 机制 |
-|---|---|---|
-| **网页版** | iframe 降级 | 无 `globalThis.dshDesktop.browser` → 走 `IframeImpl` |
-| **桌面版**（Electron） | 真 Chromium 标签页 | preload 注入完整 carrier → 走 `ElectronWebviewPresentation` |
-| **本项目的 Android 版（当前）** | iframe 降级 | WebView 加载官方 Web UI，**零注入** |
-
-### ⚠️ 障碍：后端同源闸 vs WebView 的能力边界
-
-桌面版能拿到桌面级能力，靠的是两项 **Electron 特权**：
-
-1. 文档从自定义协议 `dsh-app://app` 加载（而非 `http://127.0.0.1`）；
-2. 主进程可以**改写请求头**。
-
-而官方后端的同源闸是这样的：
+选它而不是自己起代理，是因为后者要绕的那道闸**本来就不需要绕**：
 
 ```ts
 // packages/client/connection/src/api-request-trust.ts
-if (header(request.headers, 'sec-fetch-site') === 'cross-site') return false
-const origin = header(request.headers, 'origin')
+if (sec-fetch-site === 'cross-site') return false
 if (origin === undefined) return true
-try { return new URL(origin).host === hostUrl.host } catch { return false }
+return new URL(origin).host === hostUrl.host
 ```
 
-**两道闸**：`Sec-Fetch-Site: cross-site` 直接拒；带 Origin 时 `origin.host` 必须严格等于 `Host` 头。
+文档与 API 同在引擎端口时，`Sec-Fetch-Site` 是 `same-origin`（第一条过），
+`Origin.host === Host.host`（第三条也过）。**闸本来就是过的。**
+真正需要的只有「注入」这一件事。
 
-**Android WebView 没有等价能力** —— `shouldInterceptRequest` 只能改**响应**，改不了**请求头**。
-照搬桌面架构（把文档换个 origin）就会当场被这两道闸拒掉。
+| | 本地代理方案 | **现在（官方注入 API）** |
+|---|---|---|
+| 监听端口 | 多一个 | **不加** |
+| 文档 origin | 换到代理端口 | **不变** |
+| 请求头改写 | 要剥 Origin/Sec-Fetch/Referer | **不需要** |
+| SSE / WebSocket | 要自己搬运 | **走 WebView 原生路径** |
+| 撤销 | 关掉代理（已加载的页面已注入） | **`ScriptHandler.remove()`** |
 
-**并且加白名单解决不了**：`trustedHosts` 校验的是 **Host 头**，Origin 栅栏与之独立。
+净效果：少一个 374 行的代理、少一个监听端口、少一个 502 分支。
 
-### 出路：官方留的口子
+### 金丝雀：守的是「官方还认不认这个契约」
 
-第二行 `if (origin === undefined) return true` —— 注释也明写着
-*"Absent Origin is fine — the Host fence above already bound the request."*
+`globalThis.dshDesktop` 是官方客户端的**内部契约** —— 不在任何公开文档里，
+官方一次重构就可能失效。而失效有**两种表现，都不会报错**：
 
-所以只要让 API 请求**不带 Origin 发出**即可。方案是**在本机起一个反向代理**：
+- 官方不再读这个全局 → 我们挂的是个没人看的装饰
+- 读了但字段名/版本变了 → 官方悄悄回落到 iframe 降级
 
-```
-WebView  ──同源请求──▶  127.0.0.1:<代理端口>  ──无 Origin 转发──▶  127.0.0.1:<引擎端口>
-         （文档也从这个代理加载，于是 API 是同源）
-```
+两种都是「**功能没了但界面正常**」，正是最难发现的那类故障。
 
-代理用普通 HTTP 客户端转发，**不会附加 Origin 与 Sec-Fetch-Site** → 两道闸都过。
-文档与 API 同在代理端口下，对浏览器而言还是同源。
+所以 carrier 里用 **getter 陷阱**记录官方到底读了哪一层：
 
-完整拆解与实施蓝图见 [docs/DESKTOP-ARCH.md](docs/DESKTOP-ARCH.md)。
-实验性实现见分支 `experiment/desktop-architecture`。
+| 观测点 | 含义 |
+|---|---|
+| `read` | 被读过 `dshDesktop` → 契约还认这个全局 |
+| **`browserRead`** | 被读过 `.browser` → **确实进了桌面分支**（关键信号） |
+| `acquired` | 调过 `acquire()` → 用户真的用上了浏览器面板 |
+
+原生侧等 **15 秒**观察窗口（要覆盖一次冷启动，又不能长到让失效的用户多等一次重载），
+然后判定：
+
+| 结论 | 动作 |
+|---|---|
+| 进了桌面分支 | 什么都不做 |
+| 没读 / 读了没读 `browser` / carrier 抛错 / 整页白屏 | **摘掉注入 + 重载**，回到已知可用的形态 |
+
+并按**应用版本**记账：同一版本上判定失效后不再重试（免得每次开屏都闪一下），
+**升级后自动重试** —— 因为升级可能把官方客户端也带上去了。
+
+> 这就是「失败半径不对称」的正解：**功能没拿到，但应用照常能用。**
+
+### 已知妥协
+
+**存储分区隔离做不到 Electron `<webview partition>` 的等价物。**
+Electron 的 partition 是真隔离；Android WebView 的 Cookie 与 DOM Storage 都是**进程级**的。
+现在是「一租约一 WebView + 释放时销毁」，属粗粒度隔离。
+**将来要跑互不信任的站点，这一条必须先解决。**
+
+### 验证到什么程度
+
+| 层 | 状态 |
+|---|---|
+| 金丝雀逻辑 | ✅ **在 Node 里跑了真实冒烟测试**（未读时不误报、官方读取被正确捕获） |
+| 桥名两侧一致性 | ✅ 自检里有一条专门盯它（不一致是「不报错、只是没效果」的隐蔽故障） |
+| 注入 API 可用性 | ✅ 运行期特性检测 `WebViewFeature.DOCUMENT_START_SCRIPT` |
+| **真机效果** | ❌ **未验证** —— WebView 是否真按预期执行、原生 WebView 叠加的显示效果 |
+
 
 ## 十二、安全模式：插件把界面搞死之后的自救通道
 
