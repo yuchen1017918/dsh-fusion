@@ -408,10 +408,29 @@ PYEOF
   fi
   # APK 里也不该有：凭据是运行期在设备上生成的，进包就是泄漏
   if [ -f "$APK" ]; then
-    if unzip -l "$APK" 2>/dev/null | grep -qiE "\.credentials|\.env$|id_rsa|\.pem$"; then
-      fail "APK 里疑似含凭据类文件"
+    # 文件名只做**粗筛**，内容才作准。
+    #
+    # 原来的判定用 `\.pem$` 一把抓，把 assets/runtime/cert.pem（121 个公共
+    # CA 根证书，Node 做 HTTPS 用）也判成了凭据 —— 那是误报。而误报的代价
+    # 和漏报一样实在：它会拦住一次正常交付，然后逼着人去放宽规则。
+    NAME_HITS=$(unzip -l "$APK" 2>/dev/null | awk '{print $4}' \
+      | grep -iE "\.credentials|\.env$|id_rsa|id_ed25519|\.p12$|\.jks$|keystore|\.key$" || true)
+    # 真正的判据：证书文件里出现私钥标记
+    KEY_HITS=$(unzip -p "$APK" "*.pem" "*.crt" "*.cer" 2>/dev/null \
+      | grep -cE "PRIVATE KEY|BEGIN RSA PRIVATE|BEGIN EC PRIVATE|BEGIN OPENSSH" || true)
+    KEY_HITS=${KEY_HITS:-0}
+    if [ -n "$NAME_HITS" ]; then
+      fail "APK 里含凭据类文件：$(echo "$NAME_HITS" | head -3 | tr '\n' ' ')"
+    elif [ "$KEY_HITS" -gt 0 ]; then
+      fail "APK 的证书里含私钥（$KEY_HITS 处私钥标记）"
     else
-      pass "APK 无凭据类文件"
+      # 把公共 CA 包的存在说清楚，免得下次又有人以为是漏检
+      CA=$(unzip -l "$APK" 2>/dev/null | awk '{print $4}' | grep -E "cert\.pem$" | head -1 || true)
+      if [ -n "$CA" ]; then
+        pass "APK 无凭据（$CA 是公共 CA 根证书包，已按内容确认无私钥）"
+      else
+        pass "APK 无凭据类文件"
+      fi
     fi
   fi
 else
@@ -574,6 +593,57 @@ then
   pass "内核包无 GPL 依赖（「聚合而非衍生」的前提之一）"
 else
   warn "内核包里出现 GPL 依赖，需人工复核 —— 这会改变整体许可判断"
+fi
+
+# ---------------------------------------------------------------- 15. 桌面宿主载体（浏览器面板）
+echo
+echo "── 15. 侧边栏浏览器（桌面宿主载体 + 金丝雀）──────────────"
+CARRIER="$ROOT/app/src/main/assets/host/desktop-carrier.js"
+DC="$ROOT/engine/src/main/java/io/dsh/fusion/engine/desktop/DesktopCarrier.kt"
+BH="$ROOT/engine/src/main/java/io/dsh/fusion/engine/desktop/DesktopBrowserHost.kt"
+
+check_file "desktop-carrier.js" "$CARRIER"
+check_file "DesktopCarrier.kt" "$DC"
+check_file "DesktopBrowserHost.kt" "$BH"
+
+# 桥名两侧必须一致 —— 不一致是**不报错、只是没效果**的隐蔽故障
+KT_NAME=$(grep -oE 'JS_INTERFACE = "[^"]+"' "$BH" 2>/dev/null | sed 's/.*= "//;s/"//')
+JS_NAME=$(grep -oE 'window\.__DSH_[A-Z_]+__' "$CARRIER" 2>/dev/null | head -1 | sed 's/window\.//')
+if [ -n "$KT_NAME" ] && [ "$KT_NAME" = "$JS_NAME" ]; then
+  pass "JS 桥名两侧一致（$KT_NAME）"
+else
+  fail "JS 桥名不一致：Kotlin=$KT_NAME / carrier=$JS_NAME —— 注入会静默无效"
+fi
+
+# 金丝雀三要素：陷阱、报告、原生侧判定
+if grep -q "__dshFusionCanary" "$CARRIER" && grep -q "canary.browserRead = true" "$CARRIER"; then
+  pass "carrier 带金丝雀（getter 陷阱 + 上报）"
+else
+  fail "carrier 缺金丝雀：契约失效时会变成「功能没了但界面正常」的隐蔽故障"
+fi
+if grep -q "shouldUninstall" "$DC" && grep -q "uninstall" "$DC"; then
+  pass "原生侧会按金丝雀结论摘掉注入（优雅退化，不是白屏）"
+else
+  fail "原生侧没有按金丝雀结论卸载 —— 失效的补丁会一直挂在官方界面上"
+fi
+
+# 注入必须走官方 API，不能自己起代理
+if grep -q "addDocumentStartJavaScript" "$DC"; then
+  pass "用官方 API 注入（addDocumentStartJavaScript）"
+else
+  fail "没用官方注入 API —— 自己起代理会把链路风险放大"
+fi
+if [ -f "$ROOT/engine/src/main/java/io/dsh/fusion/engine/desktop/LocalProxy.kt" ]; then
+  fail "树里还有 LocalProxy.kt —— 那条路已被官方注入 API 取代"
+else
+  pass "没有本地代理（少一个进程、少一分白屏风险）"
+fi
+
+# 不需要 GPL 之外的额外依赖：webkit 是 Apache-2.0
+if grep -q "androidx.webkit" "$ROOT/engine/build.gradle.kts"; then
+  pass "androidx.webkit 依赖已声明（Apache-2.0）"
+else
+  fail "engine 缺 androidx.webkit 依赖"
 fi
 
 # ---------------------------------------------------------------- 汇总

@@ -20,6 +20,10 @@ android {
     }
 }
 dependencies {
+    // 桌面宿主载体用 WebViewCompat.addDocumentStartJavaScript（官方支持的
+    // 「文档开始处注入」API，androidx.webkit 1.9+）。
+    // 放在 :engine 而不是 :app —— DesktopCarrier 住在这里。
+    implementation("androidx.webkit:webkit:1.11.0")
     testImplementation("junit:junit:4.13.2")
     // 用真的 org.json 覆盖 android.jar 里的桩，否则 JSON 断言全在空转
     testImplementation("org.json:json:20240303")

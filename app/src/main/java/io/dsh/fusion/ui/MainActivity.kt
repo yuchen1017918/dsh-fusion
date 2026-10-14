@@ -24,6 +24,8 @@ import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
 import io.dsh.fusion.engine.EngineState
+import io.dsh.fusion.engine.desktop.DesktopBrowserHost
+import io.dsh.fusion.engine.desktop.DesktopCarrier
 import io.dsh.fusion.engine.FusionRuntime
 import io.dsh.fusion.engine.LogBus
 import io.dsh.fusion.service.EngineService
@@ -41,6 +43,21 @@ import kotlinx.coroutines.launch
 class MainActivity : AppCompatActivity() {
 
     private lateinit var webView: WebView
+
+    /**
+     * 侧边栏浏览器的原生承载层。
+     *
+     * 压在主 WebView **之上**、状态条与底栏**之下** —— 顺序很讲究：
+     * 官方 UI 的侧边栏抽屉要能盖住它，而状态条与底栏要始终可点。
+     */
+    private lateinit var browserLayer: FrameLayout
+    private var browserHost: DesktopBrowserHost? = null
+    private var carrier: DesktopCarrier? = null
+    private var canaryRunning = false
+
+    /** 官方界面骨架是否渲染出来了。金丝雀用它区分「契约失效」与「整页白屏」。 */
+    @Volatile
+    private var shellRendered = false
     private lateinit var statusPill: TextView
     private lateinit var emptyState: LinearLayout
     private lateinit var emptyTitle: TextView
@@ -77,6 +94,13 @@ class MainActivity : AppCompatActivity() {
             visibility = View.GONE
         }
         root.addView(webView, FrameLayout.LayoutParams(MATCH, MATCH))
+
+        // 原生浏览器的承载层。默认不占位、不拦事件 —— 没有租约时它完全透明。
+        browserLayer = FrameLayout(this).apply {
+            setBackgroundColor(android.graphics.Color.TRANSPARENT)
+            visibility = View.VISIBLE
+        }
+        root.addView(browserLayer, FrameLayout.LayoutParams(MATCH, MATCH))
 
         emptyState = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -168,6 +192,32 @@ class MainActivity : AppCompatActivity() {
             mixedContentMode = WebSettings.MIXED_CONTENT_COMPATIBILITY_MODE
         }
         webView.webChromeClient = WebChromeClient()
+
+        // ── 桌面宿主桥 + 载体注入 ──────────────────────────────────
+        // 顺序要紧：桥必须先挂上。carrier 在文档**最开始**就会去读
+        // window.__DSH_FUSION_HOST__，没有桥它就直接放弃 —— 那是对的，
+        // 宁可退回 iframe 降级，也不要挂一个半残的宿主。
+        //
+        // 整段定位是「锦上添花」：任何一步失败都只记日志、不影响主流程。
+        runCatching {
+            // 第三个参数是原生往**主页面**回传 JS 的通道（比如「用户点了新链接」）。
+            // 必须在主线程调 —— WebView 的 API 都要求主线程。
+            val host = DesktopBrowserHost(this, browserLayer) { js ->
+                if (isFinishing || isDestroyed) return@DesktopBrowserHost
+                webView.post { runCatching { webView.evaluateJavascript(js, null) } }
+            }
+            browserHost = host
+            webView.addJavascriptInterface(host, DesktopBrowserHost.JS_INTERFACE)
+
+            val c = DesktopCarrier(this)
+            carrier = c
+            if (c.install(webView)) {
+                LogBus.i(TAG, "侧边栏浏览器：按桌面宿主形态接管（金丝雀守护中）")
+            } else {
+                LogBus.i(TAG, "侧边栏浏览器：保持 iframe 降级形态")
+            }
+        }.onFailure { LogBus.w(TAG, "桌面宿主桥安装失败，浏览器面板保持降级：${it.message}") }
+
         webView.webViewClient = object : WebViewClient() {
             override fun shouldOverrideUrlLoading(view: WebView?, request: WebResourceRequest?): Boolean {
                 val url = request?.url?.toString() ?: return false
@@ -215,6 +265,8 @@ class MainActivity : AppCompatActivity() {
                     if (raw == "true") {
                         shellProbeRunning = false
                         LogBus.i(TAG, "界面骨架已渲染（第 ${shellProbeAttempt + 1} 次探测）")
+                        shellRendered = true
+                        startCarrierCanary()
                         return@evaluateJavascript
                     }
                     shellProbeAttempt++
@@ -228,6 +280,43 @@ class MainActivity : AppCompatActivity() {
             }.onFailure { shellProbeRunning = false }
         }
     }
+
+    // ------------------------------------------------- 金丝雀（守注入的契约）
+
+    /**
+     * 盯着 carrier 到底有没有被官方客户端消费。
+     *
+     * carrier 挂的 `globalThis.dshDesktop` 是官方客户端的**内部契约**，
+     * 不在任何公开文档里。它一旦失效**不会报错** —— 表现只是浏览器面板
+     * 悄悄退回 iframe，是典型的最难发现的那类故障。
+     *
+     * 所以这里等一个观察窗口，读 carrier 里 getter 陷阱记下的报告：
+     *   · 进了桌面分支 → 什么都不用做
+     *   · 没进（没读 / 读了没读 browser / 自己抛错 / 整页白屏）
+     *     → **摘掉注入并重载**，回到今天这个已知可用的形态
+     *
+     * 这就是「失败半径不对称」的正解：功能没拿到，但应用照常能用。
+     */
+    private fun startCarrierCanary() {
+        val c = carrier ?: return
+        if (!c.isInstalled || canaryRunning) return
+        canaryRunning = true
+        lifecycleScope.launch {
+            val report = c.observe(webView) { shellRendered }
+            LogBus.i(TAG, "金丝雀结论：${report.verdict} —— ${report.detail}")
+            if (!report.shouldUninstall) return@launch
+
+            // 记账：同一应用版本上不再重复试。升级后会自动重试 ——
+            // 升级可能把官方客户端也带上去了，契约可能又认了。
+            c.markTripped(report.detail)
+            if (c.uninstall(webView)) {
+                LogBus.w(TAG, "已摘掉桌面宿主载体，重载回到 iframe 降级形态")
+                browserHost?.destroyAll()
+                webView.reload()
+            }
+        }
+    }
+
 
     /**
      * 等了足够久还是没骨架 —— 给一条原生出路。
