@@ -874,19 +874,29 @@ PRoot 是**独立可执行文件**，我们用 `execve` 启动它，**没有任�
   Cookie 与 DOM Storage 都是进程级的。实验分支现用「一租约一 WebView + 释放即销毁」
   做粗粒度隔离——若将来要跑互不信任的站点，这一条必须先解决
 
-**实验分支 `experiment/desktop-architecture` 的已知问题**
+  **`experiment/desktop-architecture` 已删除 —— 但它留下的教训值得记**
 
-它让 Android 版进入官方客户端的「桌面宿主」分支（拿到桌面级侧边栏浏览器）。
-不合并进主干的原因不是「做不到」，而是**它的失败模式不对等**——
-套壳版坏了坏一个面板，它坏了坏整个应用（代理在关键路径上）。
+  那个分支用「本机反向代理 + 剥 Origin」让 WebView 进桌面宿主分支。
+  它被放弃的原因不是「做不到」，而是**失败模式不对等**：
+  套壳版坏了坏一个面板，它坏了坏整个应用 —— **代理跑在关键路径上**。
 
-- 代理的 **WebSocket 处理有 3 个真 bug**：`Connection: close` 无条件追加与
-  `Connection: Upgrade` 冲突；`firstOrNull` 只转发 1 个 `sec-websocket-*` 头，
-  而 `Sec-WebSocket-Key` 与 `Sec-WebSocket-Version` 两个都是必需的
-- 后果：`/api/remote.mux` 握手失败 → **整条实时通道挂掉 → 聊天界面不能用**
-- 8 个代理测试一个都没抓到，因为它们**全是手写 HTTP 请求，没有一条走 WebSocket**
+  具体地，那个代理的 WebSocket 处理有 **3 个真 bug**：
 
-**要让它有价值，第一步是先修这 3 个 bug 并补上真正走 WebSocket 握手的测试。**
+  - `Connection: close` 无条件追加，与 `Connection: Upgrade` 冲突
+  - `firstOrNull` 只转发 1 个 `sec-websocket-*` 头，而
+    `Sec-WebSocket-Key` 与 `Sec-WebSocket-Version` **两个都是必需的**
+  - 后果：`/api/remote.mux` 握手失败 → **整条实时通道挂掉 → 聊天界面不能用**
+
+  而它的 8 个测试一个都没抓到 —— 因为它们**全是手写 HTTP 请求，没有一条走 WebSocket**。
+
+  > **这 3 个 bug 现在都不存在了**，因为它们所在的代码（`LocalProxy.kt`，374 行）
+  > 已经被删掉，换成官方注入 API（第十一节）。
+  > 这正是换方案的价值：**不是把代理修好，而是让「代理能不能修好」这个问题不再存在。**
+  >
+  > 反过来也是这 3 个 bug 教会的事：**测试覆盖率看着不低，但如果被测路径和出错路径
+  > 是两条，覆盖率就是安慰剂。** 这个问题在新的注入方案里同样成立 ——
+  > 所以金丝雀盯的是「契约有没有被消费」，而不是「注入有没有执行」。
+
 
 ---
 
@@ -1120,7 +1130,6 @@ A：默认就让操作系统分配，**不需要你操心**。只有当你手动
 |---|---|---|
 | `app/build/outputs/apk/debug/app-debug.apk` | ~108 MB | 当前构建产物 |
 | `DSH-Fusion-v1.1-mobile.apk` | 107.7 MB | 含内核包 + 移动端布局 + 安全模式 |
-| `DSH-Fusion-v1.1-desktop-experiment.apk` | 107.7 MB | 桌面架构实验分支 |
 
 精简版（`-PwithKernelBundle=false`，约 87 MB）首启走在线安装，给 x86_64 预览版用。
 
