@@ -1,0 +1,12 @@
+# 构建产物
+build/
+entry/build/
+oh_modules/
+.hvigor/
+.cxx/
+local.properties
+# 签名材料（不入库：我们的私钥不该进版本库）
+signature/*.p12
+signature/*.p7b
+signature/*.cer
+signature/*.pem

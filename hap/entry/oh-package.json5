@@ -1,0 +1,7 @@
+{
+  "name": "entry",
+  "version": "0.1.0",
+  "description": "DSH Fusion 鸿蒙端入口模块",
+  "main": "",
+  "dependencies": {}
+}

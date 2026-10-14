@@ -1,0 +1,9 @@
+{
+  "string": [
+    { "name": "module_desc", "value": "DSH Fusion 鸿蒙端" },
+    { "name": "EntryAbility_desc", "value": "DSH Fusion 主入口" },
+    { "name": "EntryAbility_label", "value": "DSH Fusion" },
+    { "name": "reason_internet", "value": "与本机引擎通信（仅回环地址）" },
+    { "name": "reason_netinfo", "value": "判断网络可用性" }
+  ]
+}

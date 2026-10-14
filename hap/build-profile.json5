@@ -1,0 +1,47 @@
+{
+  "app": {
+    "signingConfigs": [
+      {
+        // OpenHarmony 官方默认调试签名材料，口令 123456 是官方公开的。
+        // 见 hap/tools/README-sdk.md。**这套证书签出来的包只能装到
+        // OpenHarmony 设备/模拟器上**，装不到华为商用 HarmonyOS 设备 ——
+        // 华为设备只信任华为签发的证书链。拿到开发者账号后替换这里即可，
+        // 代码一行不用改。
+        "name": "default",
+        "type": "HarmonyOS",
+        "material": {
+          "certpath": "./signature/dsh-fusion.cer",
+          "storePassword": "123456",
+          "keyAlias": "dsh-fusion",
+          "keyPassword": "123456",
+          "profile": "./signature/dsh-fusion.p7b",
+          "signAlg": "SHA256withECDSA",
+          "storeFile": "./signature/dsh-fusion.p12"
+        }
+      }
+    ],
+    "products": [
+      {
+        "name": "default",
+        
+        // OpenHarmony 工程必须同时给出这两个（HarmonyOS 工程只需要前者）
+        "compatibleSdkVersion": 20,
+        "compileSdkVersion": 20,
+        "runtimeOS": "OpenHarmony"
+      }
+    ],
+    "buildModeSet": [
+      { "name": "debug" },
+      { "name": "release" }
+    ]
+  },
+  "modules": [
+    {
+      "name": "entry",
+      "srcPath": "./entry",
+      "targets": [
+        { "name": "default", "applyToProducts": ["default"] }
+      ]
+    }
+  ]
+}

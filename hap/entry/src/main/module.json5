@@ -1,0 +1,54 @@
+{
+  "module": {
+    "name": "entry",
+    "type": "entry",
+    "description": "$string:module_desc",
+    "mainElement": "EntryAbility",
+    // 设备类型必须落在 **SDK 的 device-define 集合内**，否则 SyscapTransform
+    // 会因为「多设备能力集交集为空」而失败。
+    //
+    // 注意一个容易踩的坑：`phone` 是**华为 HarmonyOS 的**设备类型，
+    // OpenHarmony SDK 里没有它 —— 同一个应用在两个 SDK 下要写不同的值。
+    // 这也说明 OpenHarmony SDK ≠ HarmonyOS SDK。
+    "deviceTypes": [
+      "default",
+      "tablet",
+      "2in1"
+    ],
+    "deliveryWithInstall": true,
+    "installationFree": false,
+    "pages": "$profile:main_pages",
+    "abilities": [
+      {
+        "name": "EntryAbility",
+        "srcEntry": "./ets/entryability/EntryAbility.ets",
+        "description": "$string:EntryAbility_desc",
+        "icon": "$media:app_icon",
+        "label": "$string:EntryAbility_label",
+        "startWindowIcon": "$media:app_icon",
+        "startWindowBackground": "$color:start_window_background",
+        "exported": true,
+        "skills": [
+          {
+            "entities": ["entity.system.home"],
+            "actions": ["action.system.home"]
+          }
+        ]
+      }
+    ],
+    // 只申请网络相关权限。**不申请 JIT / 可写可执行内存** ——
+    // 那类权限会让应用无法上架，而且本项目的端侧运行时按 jitless 跑。
+    "requestPermissions": [
+      {
+        "name": "ohos.permission.INTERNET",
+        "reason": "$string:reason_internet",
+        "usedScene": { "abilities": ["EntryAbility"], "when": "always" }
+      },
+      {
+        "name": "ohos.permission.GET_NETWORK_INFO",
+        "reason": "$string:reason_netinfo",
+        "usedScene": { "abilities": ["EntryAbility"], "when": "always" }
+      }
+    ]
+  }
+}
