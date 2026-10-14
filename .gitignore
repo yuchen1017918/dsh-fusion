@@ -38,3 +38,6 @@ Thumbs.db
 # HAP 工程只属于 experiment/harmonyos-hap 分支。
 # 它是未跟踪目录，checkout 时会跟着工作区过来，所以必须在 ignore 层再拦一道。
 hap/
+
+# iOS 分支的构建产物（rootfs 树与下载缓存，几十 MB）
+ios/build/
