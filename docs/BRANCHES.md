@@ -22,7 +22,6 @@ main（安装器，5.43 MB）
   │
   ├── full-bundled          Android 一体化应用（原 main 的内容）
   ├── experiment/harmonyos-hap      纯血鸿蒙方案（社区已有成熟实现）
-  └── experiment/desktop-architecture  桌面版形态实验
 ```
 
 **关键设计**：安装器**不含任何平台专属代码**。加一个新平台只需要往
@@ -36,7 +35,6 @@ main（安装器，5.43 MB）
 | `main` | **安装器**：设备探测 + 产物匹配 + 断点续传 | 5.43 MB APK |
 | `full-bundled` | Android 一体化应用（原来的 main） | 107.7 MB APK（arm64 / x86_64 / universal） |
 | `experiment/harmonyos-hap` | 纯血鸿蒙方案文档 + 社区项目拆解 | 暂无（见该分支文档） |
-| `experiment/desktop-architecture` | 桌面版架构实验 | 未合入 |
 
 ## 安装器的判定逻辑
 

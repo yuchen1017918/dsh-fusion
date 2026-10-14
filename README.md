@@ -85,7 +85,6 @@
 | **`main`**（本分支） | **安装器** |
 | [`full-bundled`](https://github.com/yuchen1017918/dsh-fusion/tree/full-bundled) | Android 一体化应用（原 main）—— 5 个模块、双运行时后端、SafeMode、本地大模型 |
 | `experiment/harmonyos-hap` | 纯血鸿蒙方案 + 社区 9 个项目优点拆解 |
-| `experiment/desktop-architecture` | 桌面版形态实验（未合入） |
 
 详见 **[docs/BRANCHES.md](docs/BRANCHES.md)**。
 
