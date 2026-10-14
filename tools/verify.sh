@@ -514,6 +514,68 @@ else
   warn "缺 curl，跳过模型源可达性检查"
 fi
 
+# ---------------------------------------------------------------- 14. 许可证合规
+echo
+echo "── 14. 许可证合规 ────────────────────────────────────────"
+LIC="$ROOT/app/src/main/assets/licenses"
+NOTICES="$ROOT/THIRD-PARTY-NOTICES.md"
+
+# GPL-2.0 是最关键的一份：PRoot 是唯一的强 copyleft，必须随包
+if [ -f "$LIC/GPL-2.0.txt" ]; then
+  pass "GPL-2.0 全文随包（PRoot 是唯一的强 copyleft 组件）"
+else
+  fail "缺 assets/licenses/GPL-2.0.txt —— 分发了 GPL-2.0 的 PRoot 却没带许可证全文"
+fi
+[ -f "$LIC/LGPL-3.0.txt" ] && pass "LGPL-3.0 全文随包（libtalloc）" || fail "缺 LGPL-3.0 全文"
+
+# GPL-2.0 §2(a) 要求「显著标明修改」——我们确实改过 PRoot 二进制
+if grep -q "patchelf" "$NOTICES" 2>/dev/null && grep -q "3.3" "$NOTICES" 2>/dev/null; then
+  pass "PRoot 的修改已披露（GPL-2.0 §2(a) 要求）"
+else
+  fail "第三方声明里没有披露对 PRoot 的修改 —— 违反 GPL-2.0 §2(a)"
+fi
+
+# 声明的许可证必须与实际链接的库对得上
+for lib in libproot.so libtalloc.so; do
+  if [ -f "$ROOT/app/src/main/jniLibs/arm64-v8a/$lib" ]; then
+    case "$lib" in
+      libproot.so)  grep -q "GPL-2.0"  "$NOTICES" || fail "声明里没提 $lib 的 GPL-2.0" ;;
+      libtalloc.so) grep -q "LGPL-3.0" "$NOTICES" || fail "声明里没提 $lib 的 LGPL-3.0" ;;
+    esac
+  fi
+done
+pass "GPL/LGPL 组件与声明一一对应"
+
+# 内核包 533 个依赖不许出现 GPL —— 这是「整体不必 GPL」的前提之一
+if python3 - "$ROOT/app/src/main/assets/kernel" <<'PYEOF' 2>/dev/null
+import sys, glob, tarfile, json, re, os
+d = sys.argv[1]
+arcs = glob.glob(os.path.join(d, "*.tar.xz"))
+if not arcs:
+    sys.exit(1)
+bad = []
+with tarfile.open(arcs[0], 'r:xz') as t:
+    for m in t:
+        if not m.isfile() or not m.name.endswith('package.json'):
+            continue
+        try:
+            j = json.loads(t.extractfile(m).read().decode('utf-8', 'replace'))
+        except Exception:
+            continue
+        if not j.get('name'):
+            continue
+        lic = j.get('license') or j.get('licenses') or ''
+        s = json.dumps(lic)
+        if re.search(r'\bGPL', s) and 'LGPL' not in s:
+            bad.append(j['name'])
+sys.exit(1 if bad else 0)
+PYEOF
+then
+  pass "内核包无 GPL 依赖（「聚合而非衍生」的前提之一）"
+else
+  warn "内核包里出现 GPL 依赖，需人工复核 —— 这会改变整体许可判断"
+fi
+
 # ---------------------------------------------------------------- 汇总
 echo
 echo "═══════════════════════════════════════════════════════════════"

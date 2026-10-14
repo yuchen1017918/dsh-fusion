@@ -1,0 +1,17 @@
+本目录是随包分发的第三方许可证全文。
+
+哪些组件对应哪个许可证，见仓库根目录的 THIRD-PARTY-NOTICES.md。
+
+  GPL-2.0.txt       PRoot（libproot.so / libproot-loader.so / libproot-loader32.so）
+                    注意：我们修改过这三个二进制（归一化 SONAME），
+                    修改的完整披露见 THIRD-PARTY-NOTICES.md 第 3.3 节
+  LGPL-3.0.txt      libtalloc.so（Samba talloc）
+  Apache-2.0.txt    OpenSSL（libcrypto/libssl）· Vosk · LLVM libc++
+  MIT.txt           Node.js · c-ares · 本应用自身代码
+  BSD-3-Clause.txt  （备用）
+  ISC.txt           libandroid-shmem
+  Zlib.txt          libz
+  MPL-2.0.txt       内核包中的 1 个依赖
+
+内核树里 533 个 npm 依赖的许可证文本已随 assets/kernel 内的包一起分发，
+不在本目录重复。
