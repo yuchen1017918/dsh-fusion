@@ -28,6 +28,8 @@ import { clientHandshake, isHandshakeType, serverHandshake } from './lib/handsha
 import { createConnection, createServer } from 'node:net'
 import { ChinaIpTable, isPrivateAddress, judgePeer } from './lib/cn-ip.js'
 import { createPairingSession, encodePairingText, makePairingPayload } from './lib/pairing.js'
+import { PairingGuard, effectiveResistance } from './lib/pairing-guard.js'
+import { deviceIdFromPublicKey, shortDeviceId } from './lib/device-id.js'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
 
@@ -51,6 +53,8 @@ export const Config = {
   discoveryEnabled: true,
   /** 出口监测间隔（毫秒）。只在「对端是公网地址」时才真的会去查。 */
   egressCheckMs: 30000,
+  /** 配对码位数。6 位 + 限速已足够；加长会让用户更难核对，通常不划算。 */
+  codeDigits: 6,
 }
 
 /** 允许的取值。配置写错时**尽早失败**，不要带着半截配置跑起来。 */
@@ -69,6 +73,9 @@ export function apply(ctx, config = {}) {
   const stateDir = join(homedir(), '.dsh', 'fusion-remote')
   const identity = loadOrCreateIdentity(stateDir)
   const pins = new PinStore(join(stateDir, 'peers.json'))
+  // **限速是短码唯一的安全性来源**，不是可选的加固：
+  // 6 位码在无限速下期望 8 分钟被脚本猜中；有指数退避后是 14 年。
+  const guard = new PairingGuard(join(stateDir, 'pairing-guard.json'))
   if (identity.chmodFailed) {
     // 不阻止运行，但要让人知道 —— 私钥权限没设上在某些共享目录上是真实存在的
     warn(`私钥文件权限未能设为 0600（${stateDir} 的文件系统可能不支持）`)
@@ -286,6 +293,15 @@ export function apply(ctx, config = {}) {
         connected: runtime.connected,
         discovered: runtime.peers.map((p) => ({ name: p.name, address: p.address, port: p.port })),
         paired: pins.list().map((p) => ({ name: p.name, publicKey: p.publicKey.slice(0, 12) + '…' })),
+        // 设备 ID 是公钥的可读形式（带 Luhn 校验位，打错一位能查出来）
+        deviceId: deviceIdFromPublicKey(identity.publicKey),
+        deviceIdShort: shortDeviceId(deviceIdFromPublicKey(identity.publicKey)),
+        pairing: {
+          ...guard.status(),
+          codeDigits: cfg.codeDigits,
+          // 把「限速到底有没有用」直接算给用户看，而不是让他信我们
+          resistance: effectiveResistance(cfg.codeDigits),
+        },
         crossBorderGuard: {
           tableRanges: cnTable.ranges.length,
           generatedAt: cnTable.generatedAt,

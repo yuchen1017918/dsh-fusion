@@ -147,11 +147,30 @@ export function verifySignature(publicKeyB64, data, signatureB64) {
  * （要暴力，攻击者得先能同时截断两条连接并各自冒充，那时它面对的
  *  是挑战应答，不是这 6 位数）。
  */
-export function pairingCode(pubA, pubB) {
+export const DEFAULT_CODE_DIGITS = 6
+
+/**
+ * @param {number} [digits] 码长。默认 6 位（约 20 bit 熵）。
+ *
+ * Magic Wormhole 的 `--code-length=4` 提供了这个开关，理由是：
+ * 默认码长是**便利与熵的折中**，而对安全性要求更高的场景
+ * （比如要跨不可信网络传配对码）应该能自己加长。
+ *
+ * **但要注意：加长码长不是免费的。** 6 位已经要用户逐位核对，
+ * 8 位就更难念、更难比 —— 而**用户看不清就不会认真比**，
+ * 那等于把安全性从「码长」转移到了「用户的耐心」上，
+ * 通常不划算。真正该做的是**限速**（见 pairing-guard.js）：
+ * 6 位 + 限速 ≈ 14 年，而无限速的 8 位只要 14 小时。
+ */
+export function pairingCode(pubA, pubB, digits = DEFAULT_CODE_DIGITS) {
+  const n = Math.max(4, Math.min(10, digits | 0))
   const [x, y] = [pubA, pubB].sort()
   const h = createHash('sha256').update(`dsh-fusion-remote/pair/v1|${x}|${y}`).digest()
-  const n = h.readUInt32BE(0) % 1_000_000
-  return String(n).padStart(6, '0')
+  // 用两个 32 位字拼出最多 10 位十进制（10^10 < 2^34）
+  const big = h.readUInt32BE(0) * 0x100000000 + h.readUInt32BE(4)
+  const mod = 10 ** n
+  const v = Number(BigInt(big) % BigInt(mod))
+  return String(v).padStart(n, '0')
 }
 
 // ─────────────────────────────────────────── 握手
