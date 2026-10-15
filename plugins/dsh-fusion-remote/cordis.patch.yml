@@ -1,0 +1,10 @@
+# 远程连接插件。
+#
+# **默认什么都不做** —— role 是 off。装上插件不等于开放了任何东西，
+# 要用户在设置里明确打开服务端才会监听。
+- insert:
+    - id: fusion-remote
+      name: dsh-fusion-remote
+      config:
+        role: off
+        mode: local

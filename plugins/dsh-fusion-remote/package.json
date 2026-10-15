@@ -1,0 +1,11 @@
+{
+  "name": "dsh-fusion-remote",
+  "version": "0.1.0-dev",
+  "description": "远程连接：把本机后端换成另一台设备上的 DSH。服务端与客户端同一个插件，双向认证，内置跨境闸。当前可用局域网直连，跨网络连接待 rendezvous 服务器就绪。",
+  "type": "module",
+  "main": "./lib/index.js",
+  "license": "MIT",
+  "scripts": {
+    "test": "node test/cn-ip.test.mjs && node test/auth.test.mjs && node test/tunnel.test.mjs && node test/handshake.test.mjs && node test/discovery-pairing.test.mjs"
+  }
+}
