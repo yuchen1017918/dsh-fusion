@@ -1,0 +1,23 @@
+# 子域名配好后，把这段**追加**到 /etc/caddy/Caddyfile
+# （不要动现有的 :80 站点块），然后 systemctl reload caddy
+#
+# 前提：DNS 把 rendezvous.yuchenhub.com 指到 114.215.206.23，
+#       并且**备案已通过**（域名走 443 才需要备案；非标端口不需要）。
+#
+# 同时把 docker-compose.yml 的 ports 改成只绑回环：
+#     - "127.0.0.1:8443:8443"
+
+rendezvous.yuchenhub.com {
+    reverse_proxy 127.0.0.1:8443
+
+    # 这个域名的所有路径都不该被索引 —— 它只有 WS 与两个 HTTP 端点
+    header X-Robots-Tag "noindex, nofollow"
+    header -Server
+
+    log {
+        output file /var/log/caddy/rendezvous.log {
+            roll_size 10mb
+            roll_keep 3
+        }
+    }
+}

@@ -9,8 +9,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
   Identity, PinStore, admit, generateIdentity, loadOrCreateIdentity,
-  makeClientHello, makeServerHello, pairingCode, verifyClientProof,
-  verifyServerHello, verifySignature,
+  makeClientHello, makeServerHello, pairingCode, sessionIdFrom,
+  verifyClientProof, verifyServerHello, verifySignature,
 } from '../lib/auth.js'
 
 let pass = 0, fail = 0
@@ -43,13 +43,41 @@ t('null 公钥失败', verifySignature(null, 'hello', sig), false)
 t('null 签名失败', verifySignature(alice.publicKey, 'hello', null), false)
 
 console.log('\n── 配对码 ──')
-const codeAB = pairingCode(alice.publicKey, bob.publicKey)
-const codeBA = pairingCode(bob.publicKey, alice.publicKey)
+const SID = sessionIdFrom('n1-' + 'a'.repeat(20), 'n2-' + 'b'.repeat(20))
+const codeAB = pairingCode(alice.publicKey, bob.publicKey, SID)
+const codeBA = pairingCode(bob.publicKey, alice.publicKey, SID)
 // 这条是最容易错的：不排序的话 A 算 (A,B)、B 算 (B,A)，两边永远对不上，
 // 而且症状看起来像协议错，其实是忘了排序
 t('(A,B) 与 (B,A) 相同（排序生效）', codeAB, codeBA)
 t('是 6 位十进制', /^\d{6}$/.test(codeAB), true)
-t('不同设备对得不同码', pairingCode(alice.publicKey, generateIdentity().publicKey) !== codeAB, true)
+t('不同设备对得不同码', pairingCode(alice.publicKey, generateIdentity().publicKey, SID) !== codeAB, true)
+
+console.log('\n── 配对码必须绑定会话（WPS PIN 那个坑）──')
+// 第一版只用两个公钥派生 ⇒ 码永远不变 ⇒ 被拍到一次就永久有效。
+// WPS PIN 就是这个形状，也因此被攻破。所以 sessionId 现在是必填。
+const SID2 = sessionIdFrom('n1-' + 'c'.repeat(20), 'n2-' + 'd'.repeat(20))
+t('换会话就换码', pairingCode(alice.publicKey, bob.publicKey, SID2) !== codeAB, true)
+let sidErr = ''
+try { pairingCode(alice.publicKey, bob.publicKey) } catch (e) { sidErr = e.message }
+t('不传 sessionId → 抛错', sidErr.includes('sessionId'), true)
+try { pairingCode(alice.publicKey, bob.publicKey, 'x') } catch (e) { sidErr = e.message }
+t('sessionId 太短 → 抛错', sidErr.includes('足够长'), true)
+
+console.log('\n── sessionId 派生：双方各出一个 nonce ──')
+t('(a,b) 与 (b,a) 相同', sessionIdFrom('na', 'nb'), sessionIdFrom('nb', 'na'))
+t('换一个 nonce 就变', sessionIdFrom('na', 'nb') !== sessionIdFrom('na', 'nc'), true)
+t('长度够（base64url）', sessionIdFrom('na', 'nb').length >= 40, true)
+let sdErr = ''
+try { sessionIdFrom('na') } catch (e) { sdErr = e.message }
+t('缺一个 nonce → 抛错', sdErr.includes('nonce'), true)
+
+console.log('\n── 码长可选（Wormhole 的 --code-length）──')
+t('4 位', pairingCode(alice.publicKey, bob.publicKey, SID, 4).length, 4)
+t('8 位', pairingCode(alice.publicKey, bob.publicKey, SID, 8).length, 8)
+t('越界会被夹住（下限 4）', pairingCode(alice.publicKey, bob.publicKey, SID, 1).length, 4)
+t('越界会被夹住（上限 10）', pairingCode(alice.publicKey, bob.publicKey, SID, 99).length, 10)
+// 同会话下加长码应是短码的扩展前缀（同一来源）—— 至少不该在 6 位时相等
+t('不同长度得到不同的码', pairingCode(alice.publicKey, bob.publicKey, SID, 6) !== pairingCode(alice.publicKey, bob.publicKey, SID, 8), true)
 
 console.log('\n── 完整握手（首次配对）──')
 const hello = makeClientHello(alice)

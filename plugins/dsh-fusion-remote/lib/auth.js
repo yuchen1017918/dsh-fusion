@@ -162,15 +162,50 @@ export const DEFAULT_CODE_DIGITS = 6
  * 通常不划算。真正该做的是**限速**（见 pairing-guard.js）：
  * 6 位 + 限速 ≈ 14 年，而无限速的 8 位只要 14 小时。
  */
-export function pairingCode(pubA, pubB, digits = DEFAULT_CODE_DIGITS) {
+export function pairingCode(pubA, pubB, sessionId, digits = DEFAULT_CODE_DIGITS) {
+  // ── sessionId 是**必填**的，这是刻意的 ──────────────────────────────
+  //
+  // 第一版只用了两个公钥：`hash(sorted(pubA, pubB))`。
+  // 那样算出来的码**永远不变** —— 因为两个公钥不变。
+  //
+  // 那是「长期有效的固定秘密」，**WPS PIN 就是这个形状**，
+  // 而 WPS PIN 之所以被攻破，正是因为它不变、不限时、可重复使用。
+  // 具体到我们这里，后果是：
+  //   · 有人拍到了屏幕上的二维码 → 那个码**以后一直有效**
+  //   · 上一次配对时被看到的码 → 下一次**还是同一个码**
+  //   · 限速只能拖慢攻击者，**他只需要成功一次**
+  //
+  // 所以这里要求必须带一个**每次配对新生成的** sessionId。
+  // 它不需要保密（码才是秘密），它的作用是**让这次配对的码只对这一次有效**。
+  //
+  // 把它设成必填而不是可选，是为了让「忘记传」编译不过 ——
+  // 可选的话，忘了传就会静默退回成固定秘密，而这正是最难发现的失败方式。
+  if (!sessionId || typeof sessionId !== 'string' || sessionId.length < 16) {
+    throw new Error('pairingCode 需要一个足够长的 sessionId（每次配对新生成）')
+  }
   const n = Math.max(4, Math.min(10, digits | 0))
   const [x, y] = [pubA, pubB].sort()
-  const h = createHash('sha256').update(`dsh-fusion-remote/pair/v1|${x}|${y}`).digest()
+  const h = createHash('sha256')
+    .update(`dsh-fusion-remote/pair/v2|${x}|${y}|${sessionId}`).digest()
   // 用两个 32 位字拼出最多 10 位十进制（10^10 < 2^34）
   const big = h.readUInt32BE(0) * 0x100000000 + h.readUInt32BE(4)
   const mod = 10 ** n
   const v = Number(BigInt(big) % BigInt(mod))
   return String(v).padStart(n, '0')
+}
+
+/**
+ * 由双方各自的 nonce 派生出本次配对的 sessionId。
+ *
+ * **双方各出一个**，而不是由一方决定 —— 否则那一方可以反复使用自己挑的
+ * sessionId，把「每次不同」这件事又变回「他自己说了算」。
+ * 这和配对码本身要排序是同一个道理。
+ */
+export function sessionIdFrom(nonceA, nonceB) {
+  if (!nonceA || !nonceB) throw new Error('sessionId 需要双方的 nonce')
+  const [x, y] = [String(nonceA), String(nonceB)].sort()
+  return createHash('sha256').update(`dsh-fusion-remote/session/v1|${x}|${y}`)
+    .digest('base64url')
 }
 
 // ─────────────────────────────────────────── 握手

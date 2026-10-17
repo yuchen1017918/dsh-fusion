@@ -1,0 +1,48 @@
+# DSH Fusion 会合服务器
+#
+# ⚠ **本文件不会自动启动任何东西。**
+#   部署脚本只把文件放上去；要不要跑、什么时候跑，由你决定。
+#   启动命令在 README.md 里。
+#
+# 端口说明：8443 是**非标端口**，备案不影响它 ——
+# 备案管的是 80/443 上的域名访问。等子域名配好、备案过了，
+# 再让 Caddy 在前面做 TLS，那时这个容器只需要监听 127.0.0.1。
+
+services:
+  rendezvous:
+    build: .
+    image: dsh-rendezvous:0.1.0
+    container_name: dsh-rendezvous
+    # **restart: "no"** —— 刻意的。我们不希望机器重启后它自己冒出来：
+    # 用户还没决定要开，服务就不该自己开。
+    restart: "no"
+
+    ports:
+      # 只绑公网 IP 的 8443。不绑 0.0.0.0 是为了在有多网卡时更好排查。
+      - "0.0.0.0:8443:8443"
+
+    environment:
+      NODE_ENV: production
+      PORT: "8443"
+      HOST: "0.0.0.0"
+      # 日志里不记完整 IP（内部限速仍然用完整值，只是不落盘）
+      LOG_FULL_IP: "0"
+
+    # 资源上限：这台机器只有 1.7 G，不能让一个容器把整机拖垮
+    deploy:
+      resources:
+        limits:
+          memory: 384M
+          cpus: "1.0"
+
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m

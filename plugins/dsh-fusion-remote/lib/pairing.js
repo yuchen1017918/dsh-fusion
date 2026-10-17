@@ -24,7 +24,7 @@
  * 反过来（电脑连手机）电脑没相机，所以那一侧走数字码。
  */
 
-import { pairingCode } from './auth.js'
+import { pairingCode, sessionIdFrom, nonce as makeNonce } from './auth.js'
 
 export const PAIR_SCHEME = 'dshfusion'
 export const PAIR_VERSION = 1
@@ -99,8 +99,8 @@ export function decodePairingText(text) {
  * @returns {{code: string, digest: string}}
  *   `code` 是给用户比对的 6 位数；`digest` 是完整摘要（用于日志与去重，不进 UI）。
  */
-export function finalizePairing(myPublicKey, peerPublicKey) {
-  const code = pairingCode(myPublicKey, peerPublicKey)
+export function finalizePairing(myPublicKey, peerPublicKey, sessionId) {
+  const code = pairingCode(myPublicKey, peerPublicKey, sessionId)
   const digest = Buffer.from(`${myPublicKey}|${peerPublicKey}`)
     .toString('base64url').slice(0, 16)
   return { code, digest }
@@ -120,27 +120,100 @@ export const PairState = {
   CONFIRMED: 'confirmed',       // 用户已确认，正在建立通道
   DONE: 'done',
   FAILED: 'failed',
+  EXPIRED: 'expired',           // 超时，码作废
 }
 
-export function createPairingSession({ myPublicKey, method }) {
+/**
+ * 配对窗口的默认时长。
+ *
+ * 3 分钟的依据：
+ *   · 够你走到另一台设备前、拿起它、扫一下（这是真实的操作时间）
+ *   · 短到「屏幕被别人看到」这件事的暴露窗口有限
+ *
+ * 参照：Matter/HomeKit 的配对窗口是 15 分钟，Wi-Fi WPS 是 2 分钟，
+ * 蓝牙配对一般在 30 秒。我们取中间 —— 手机与电脑之间来回走
+ * 需要一点时间，但 15 分钟太长了。
+ */
+export const DEFAULT_TTL_MS = 3 * 60 * 1000
+
+/** 到期前多久开始提醒。 */
+export const EXPIRY_WARN_MS = 30 * 1000
+
+export function createPairingSession({
+  myPublicKey, method,
+  ttlMs = DEFAULT_TTL_MS,
+  now = () => Date.now(),
+  onExpire = () => {},
+}) {
   if (!['code', 'qr'].includes(method)) throw new Error(`未知的配对方式：${method}`)
   let state = PairState.IDLE
   let peer = null
   let code = null
+  let myNonce = null
+  let sessionId = null
+  let startedAt = 0
+  let expiresAt = 0
+  let consumed = false        // 一次性：用过就作废
 
   const guard = (want) => {
     if (state !== want) throw new Error(`配对状态不对：现在 ${state}，需要 ${want}`)
   }
 
-  return {
+  /** 超时检查。每个会推进状态的动作都要先过这一关。 */
+  const checkFresh = () => {
+    if (state === PairState.EXPIRED) throw new Error('配对窗口已超时，请重新生成配对码')
+    if (expiresAt && now() >= expiresAt) {
+      state = PairState.EXPIRED
+      code = null
+      sessionId = null
+      onExpire()
+      throw new Error('配对窗口已超时，请重新生成配对码')
+    }
+  }
+
+  const api = {
     get state() { return state },
     get method() { return method },
     get peer() { return peer },
     get code() { return code },
+    get sessionId() { return sessionId },
+    get consumed() { return consumed },
+    get expiresAt() { return expiresAt },
+    /** 还剩多少毫秒。UI 拿去画倒计时。 */
+    remainingMs() { return Math.max(0, expiresAt - now()) },
+    /** 是不是快到头了（UI 该变色提醒）。 */
+    expiringSoon() { return expiresAt > 0 && this.remainingMs() <= EXPIRY_WARN_MS },
 
-    start() { guard(PairState.IDLE); state = PairState.SHOWING; return this },
+    start() {
+      guard(PairState.IDLE)
+      myNonce = makeNonce()
+      startedAt = now()
+      // **每次 start 都是一个新的窗口。** 这正是「码会变」的来源：
+      // 上一个窗口里被看到的码，在新窗口里不再是同一个码
+      expiresAt = startedAt + ttlMs
+      state = PairState.SHOWING
+      return api
+    },
 
-    /** 收到对方的公钥（扫码得到，或对端握手时带来）。 */
+    /**
+     * 续期 / 重新生成。
+     *
+     * 超时后**不能只是把时钟拨回去** —— 必须换一个新的 nonce，
+     * 否则「重置」出来的还是同一个码，等于没重置。
+     */
+    refresh() {
+      myNonce = makeNonce()
+      sessionId = null
+      code = null
+      peer = null
+      consumed = false
+      startedAt = now()
+      expiresAt = startedAt + ttlMs
+      state = PairState.SHOWING
+      return { sessionId: myNonce, expiresAt }
+    },
+
+    /** 收到对方的公钥与 nonce（扫码得到，或握手时带来）。 */
     acceptPeer(peerPublicKey, info = {}) {
       // **公钥变更的检查必须排在状态守卫之前。**
       //
@@ -154,15 +227,22 @@ export function createPairingSession({ myPublicKey, method }) {
         throw new Error('配对过程中对端公钥发生变化，已中止')
       }
       guard(PairState.SHOWING)
+      checkFresh()
       if (!peerPublicKey || peerPublicKey === myPublicKey) {
         // 连自己是最常见的误操作（同机双开），要明确拒掉而不是静默
         throw new Error('对端公钥无效或与本机相同')
       }
-      peer = { publicKey: peerPublicKey, ...info }
-      const f = finalizePairing(myPublicKey, peerPublicKey)
-      code = f.code
+      const peerNonce = info.nonce
+      if (!peerNonce) {
+        // 没有对端 nonce 就只能退回「两公钥固定派生」——
+        // 那正是我们要摆脱的形状，所以这里明确拒绝而不是降级
+        throw new Error('缺少对端 nonce：配对码必须绑定到本次会话，不能由公钥固定派生')
+      }
+      sessionId = sessionIdFrom(myNonce, peerNonce)
+      peer = { publicKey: peerPublicKey, nonce: peerNonce, name: info.name }
+      code = pairingCode(myPublicKey, peerPublicKey, sessionId)
       state = PairState.PEER_SEEN
-      return { code, digest: f.digest }
+      return { code, sessionId, expiresAt }
     },
 
     /**
@@ -173,6 +253,17 @@ export function createPairingSession({ myPublicKey, method }) {
      * **数字码方式下必须传，且必须相等** —— 这是那一层唯一的安全性来源。
      */
     confirm(comparedCode = null) {
+      // **超时与一次性的检查必须排在状态守卫之前。**
+      //
+      // 这和 acceptPeer 里「公钥变更 vs 状态不对」是同一类问题：
+      //   · 「状态不对」= 调用方的编程错误，改代码就能过
+      //   · 「已超时」「已用过」= **安全事件**，是用户需要知道的事
+      //
+      // 守卫排在前面时，后两者会被报成前者 —— 实现者看到「状态不对」
+      // 会想着去重置状态把它绕过去，而正确的反应是「这个码作废了，重新生成」。
+      // 顺序错了，错误信息就会把人引向错的修法。
+      checkFresh()
+      if (consumed) throw new Error('这个配对码已经用过了，请重新生成')
       guard(PairState.PEER_SEEN)
       if (method === 'code') {
         if (comparedCode === null || comparedCode === undefined) {
@@ -183,12 +274,17 @@ export function createPairingSession({ myPublicKey, method }) {
           throw new Error('配对码不一致 —— 可能存在中间人，已中止')
         }
       }
+      consumed = true          // 一次性
       state = PairState.CONFIRMED
-      return { peerPublicKey: peer.publicKey, code }
+      return { peerPublicKey: peer.publicKey, code, sessionId }
     },
 
     done() { guard(PairState.CONFIRMED); state = PairState.DONE },
-    fail(reason) { state = PairState.FAILED; this.reason = reason },
-    cancel() { if (state !== PairState.DONE) state = PairState.IDLE; peer = null; code = null },
+    fail(reason) { state = PairState.FAILED; api.reason = reason },
+    cancel() {
+      if (state !== PairState.DONE) state = PairState.IDLE
+      peer = null; code = null; sessionId = null; consumed = false; expiresAt = 0
+    },
   }
+  return api
 }

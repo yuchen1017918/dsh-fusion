@@ -1,0 +1,17 @@
+{
+  "name": "dsh-fusion-rendezvous",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "DSH Fusion 远程连接的会合与中继服务。只中转不透明字节，不参与认证。",
+  "main": "server.mjs",
+  "scripts": {
+    "start": "node server.mjs"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
