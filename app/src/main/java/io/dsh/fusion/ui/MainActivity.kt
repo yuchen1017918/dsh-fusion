@@ -159,8 +159,11 @@ class MainActivity : AppCompatActivity() {
             Item("重启") { restartEngine() },
         )
         items.forEach { item ->
-            val button = UiKit.pill(this, item.label) { item.action() }
-            bar.addView(button, LinearLayout.LayoutParams(0, WRAP, 1f).apply {
+            // compact：五个按钮等宽，但标签字数不同（控制台是 3 个字，其余 2 个）。
+            // 不加 compact 时它会在窄槽里折成两行，比旁边几个高一截 ——
+            // 横向 LinearLayout 的行高取最高的那个，看起来就像这个按钮特别大。
+            val button = UiKit.pill(this, item.label, compact = true) { item.action() }
+            bar.addView(button, LinearLayout.LayoutParams(0, UiKit.dp(this@MainActivity, 40f), 1f).apply {
                 marginStart = UiKit.dp(this@MainActivity, 3f)
                 marginEnd = UiKit.dp(this@MainActivity, 3f)
             })

@@ -97,21 +97,48 @@ object UiKit {
     }
 
     /** 药丸按钮。primary 为真时是实心强调色。 */
+    /**
+     * 胶囊按钮。
+     *
+     * @param compact 排在一行里的多个等宽按钮用这个。
+     *
+     * ── 为什么需要 compact ──────────────────────────────────────────────
+     * 底部导航那五个按钮是等宽的（weight=1 各占 1/5），而它们的标签字数
+     * **不一样**：对话 / 体检 / 设置 / 重启 都是 2 个字，**控制台是 3 个**。
+     *
+     * 高度用的是 WRAP_CONTENT，于是字数多的那个在窄槽里换行成两行，
+     * 渲染出来就比旁边几个高一截。而横向 LinearLayout 的行高取最高的那个，
+     * 看起来像是「控制台这个按钮特别大」。
+     *
+     * compact 做三件事：单行、收紧左右内边距、固定高度。
+     * **固定高度是关键** —— 只加单行的话，一旦某个标签更长就会被截断成省略号，
+     * 而高度一致能保证「一排按钮看起来是一排」这个最基本的秩序。
+     */
     fun pill(
         context: Context,
         label: String,
         primary: Boolean = false,
         color: Int? = null,
+        compact: Boolean = false,
         onClick: (() -> Unit)? = null,
     ): TextView {
         val accent = color ?: if (primary) ACCENT else BLUE
+        val hPad = if (compact) 6f else 16f
         return TextView(context).apply {
             text = label
             textSize = 13f
             gravity = Gravity.CENTER
             setTextColor(if (primary) 0xFF06110C.toInt() else TEXT)
             background = rounded(if (primary) accent else SURFACE_HIGH, 12f, context, if (primary) null else STROKE)
-            setPadding(dp(context, 16f), dp(context, 10f), dp(context, 16f), dp(context, 10f))
+            setPadding(dp(context, hPad), dp(context, 10f), dp(context, hPad), dp(context, 10f))
+            if (compact) {
+                maxLines = 1
+                isSingleLine = true
+                ellipsize = android.text.TextUtils.TruncateAt.END
+                // 同一行里的按钮高度必须一致：13sp 一行 ≈ 18dp，加 10dp×2 内边距 = 38dp，
+                // 取 40dp 留一点余量，字体缩放设到最大时也不会被裁掉
+                height = dp(context, 40f)
+            }
             isClickable = true
             isFocusable = true
             onClick?.let { action -> setOnClickListener { action() } }

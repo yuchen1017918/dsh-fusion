@@ -33,9 +33,35 @@ const DSH_DIR = process.env.DSH_FUSION_DSH_DIR
 const NODE_BIN = process.env.DSH_FUSION_NODE_BIN
 const PNPM_ENTRY = process.env.DSH_FUSION_PNPM_ENTRY
 const PROFILE = process.env.DSH_FUSION_PROFILE || 'web'
-const APP_ARGS = process.env.DSH_FUSION_APP_ARGS
-  ? process.env.DSH_FUSION_APP_ARGS.split('\u0000').filter(part => part.length > 0)
-  : []
+/**
+ * web app 的参数（目前是 --port <n> --host 127.0.0.1）。
+ *
+ * ── 为什么是 JSON ─────────────────────────────────────────────────────
+ * 原来用 NUL 分隔，但**环境变量里存不了 NUL** —— 内核用 NUL 分隔 environ 条目，
+ * 值里的 NUL 会被吃掉，于是几段粘成 "--port7301--host127.0.0.1"，
+ * 引擎拿着这个值直接启动失败。这是真机实测才发现的：
+ * 两侧代码各自都对（一侧 join NUL、一侧 split NUL），**错的是约定本身**。
+ *
+ * 读取时保留一个降级：万一拿到的是老格式（没有花括号），
+ * 按空白/控制字符切分并警告 —— 宁可退化，也不要因为一个格式问题整个起不来。
+ */
+const APP_ARGS = (() => {
+  const raw = process.env.DSH_FUSION_APP_ARGS
+  if (!raw) return []
+  const t = raw.trim()
+  if (t.startsWith('[')) {
+    try {
+      const arr = JSON.parse(t)
+      if (!Array.isArray(arr)) throw new Error('不是数组')
+      return arr.filter((x) => typeof x === 'string' && x.length > 0)
+    } catch (e) {
+      console.error(`[host] DSH_FUSION_APP_ARGS 不是合法 JSON（${e.message}），按空白切分兜底`)
+    }
+  }
+  // 降级路径：老格式或异常值。按空白与控制字符切，并滤掉空段。
+  console.error('[host] DSH_FUSION_APP_ARGS 走降级解析，建议检查注入侧')
+  return t.split(/[\s\u0000\u001f]+/).filter((x) => x.length > 0)
+})()
 
 /**
  * 找到导出了 runProfile 的那个 chunk。

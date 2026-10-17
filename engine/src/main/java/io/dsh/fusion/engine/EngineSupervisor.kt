@@ -301,6 +301,30 @@ class EngineSupervisor(
         else -> hostPath
     }
 
+    /**
+     * 环境变量里不能有 NUL —— 这是内核的限制（/proc/pid/environ 用 NUL 分隔条目）。
+     *
+     * 值里带 NUL 时，它会被**静默吃掉**，几个字段粘在一起。
+     * 症状是子进程拿到一个看不懂的值然后报错，而错误信息
+     * （"Invalid environment variable value: ..."）不会指向「有人用了 NUL 当分隔符」。
+     *
+     * 这个检查本身不修复任何东西 —— 它的价值在于**下次再有人这么写时会立刻炸**，
+     * 而不是等到真机上表现为「引擎启动失败」。
+     */
+    private fun assertNoNul(env: Map<String, String>) {
+        for ((k, v) in env) {
+            if (v.indexOf('\u0000') >= 0) {
+                // 注意：Kotlin 的字符串里不能直接嵌套双引号，
+                // 所以这里不用「值="..."」那种写法 —— 上一版就是那样写坏语法的。
+                LogBus.e(
+                    TAG,
+                    "环境变量 $k 含 NUL 字节（值 = ${v.replace("\u0000", "\\0")}）；" +
+                        "内核会把它吃掉，子进程拿到的值必然错乱。请改用 JSON 或其他不依赖 NUL 的编码。",
+                )
+            }
+        }
+    }
+
     private fun envFor(backend: EngineBackend, port: Int): Map<String, String> {
         // 桥的地址与 token 只能通过环境变量交给插件 —— 端口是启动时动态选的
         val extra = HashMap<String, String>(bridgeEnv())
@@ -311,6 +335,7 @@ class EngineSupervisor(
             LogBus.i(TAG, "本地模型已启用：DEEPSEEK_BASE_URL=$it")
         }
         val base = RuntimeEnv.base(paths, settings.npmRegistry, settings.heapMb, extra)
+        assertNoNul(base)
         return when (backend) {
             EngineBackend.BIONIC_NATIVE -> base
             // 客人视角的路径必须覆盖掉宿主视角，顺序不能反
@@ -333,8 +358,27 @@ class EngineSupervisor(
         env["DSH_FUSION_DSH_DIR"] = p(paths.dshDir)
         env["DSH_FUSION_PROFILE"] = "web"
         env["DSH_FUSION_NODE_BIN"] = p(paths.nodeBin)
-        // web app 自己的参数；用 NUL 分隔，避免任何引号/空格转义问题
-        env["DSH_FUSION_APP_ARGS"] = listOf("--port", port.toString(), "--host", "127.0.0.1").joinToString(NUL)
+        // web app 自己的参数。
+        //
+        // ── 为什么是 JSON，不是分隔符 ──────────────────────────────────
+        // 原来用 NUL（\u0000）当分隔符，理由是「避免引号/空格转义」。
+        // 但**环境变量里存不了 NUL** —— 内核用 NUL 作为 environ 的分隔符，
+        // 值里的 NUL 会被静默吃掉。于是
+        //     "--port\u00007301\u0000--host\u0000127.0.0.1"
+        // 到了子进程里变成
+        //     "--port7301--host127.0.0.1"
+        // 三段粘成一串，引擎直接启动失败：
+        //     Invalid environment variable value: "--port7301--host127.0.0.1"
+        //
+        // 这是**在应用宝里真机实测才发现**的 —— 静态检查看不出问题，
+        // 因为两侧的代码各自都「对」：一侧 join NUL、一侧 split NUL。
+        // 错的是那个约定本身。
+        //
+        // JSON 没有这个问题：不依赖分隔符，且值里出现任何字符都安全。
+        env["DSH_FUSION_APP_ARGS"] = org.json.JSONArray().apply {
+            put("--port"); put(port.toString())
+            put("--host"); put("127.0.0.1")
+        }.toString()
         if (paths.pnpmReady()) {
             env["DSH_FUSION_PNPM_ENTRY"] = p(paths.pnpmEntry)
         } else {
@@ -419,7 +463,8 @@ class EngineSupervisor(
         private const val TAG = "引擎"
 
         /** 环境变量里分隔多个参数的哨兵字符（不可能出现在参数里）。 */
-        private const val NUL = "\u0000"
+        // NUL 常量已移除：它曾被当作环境变量的分隔符，而内核不允许值里有 NUL。
+        // 见 hostEnv() 里的说明。
         private const val START_TIMEOUT_MS = 180_000L
         private const val WATCHDOG_INTERVAL_MS = 4_000L
         private const val MAX_WATCHDOG_RESTARTS = 5
