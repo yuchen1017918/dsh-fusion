@@ -1,5 +1,10 @@
 <resources>
+    <!-- 界面底色。注意别拿它当图标背景 —— 它同时是 windowBackground、
+         statusBarColor、navigationBarColor 与 colorPrimaryDark。 -->
     <color name="bg">#0B0F16</color>
+    <!-- 自适应图标的背景，取自图标本身的底色（#F8F8F8，近白）。
+         单独一个条目，避免改图标时连带改了整个界面的底色。 -->
+    <color name="ic_launcher_background">#F8F8F8</color>
     <color name="surface">#141A26</color>
     <color name="surface_high">#1C2434</color>
     <color name="stroke">#26314A</color>
