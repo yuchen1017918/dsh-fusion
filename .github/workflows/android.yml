@@ -4,8 +4,6 @@ on:
   workflow_dispatch:
   push:
     branches: [ "main", "full-bundled" ]
-  pull_request:
-    branches: [ "main", "full-bundled" ]
 
 jobs:
   build:
@@ -22,17 +20,20 @@ jobs:
         distribution: 'temurin'
         cache: gradle
 
-    - name: Grant execute permission for gradlew
+    - name: Build with Gradle (Auto-detect)
       run: |
-        # 先查找 gradlew 的实际位置
-        find . -name "gradlew" -type f
-        # 无论它在根目录还是子目录，都赋予执行权限
-        find . -name "gradlew" -type f -exec chmod +x {} \;
-
-    - name: Build with Gradle
-      run: |
-        # 如果 gradlew 不在根目录，需要进入对应目录构建
-        # 这里假设它在根目录，如果报错请根据上一步 find 的结果调整
+        # 自动查找 gradlew 所在目录
+        GRADLEW_PATH=$(find . -name "gradlew" -type f | head -n 1)
+        if [ -z "$GRADLEW_PATH" ]; then
+          echo "错误：未找到 gradlew 文件！"
+          exit 1
+        fi
+        GRADLEW_DIR=$(dirname "$GRADLEW_PATH")
+        echo "找到 gradlew，位于目录: $GRADLEW_DIR"
+        
+        # 赋予执行权限并进入该目录构建
+        chmod +x "$GRADLEW_PATH"
+        cd "$GRADLEW_DIR"
         ./gradlew assembleDebug
 
     - name: Upload APK Artifact
