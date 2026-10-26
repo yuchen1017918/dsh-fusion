@@ -20,6 +20,15 @@ jobs:
         distribution: 'temurin'
         cache: gradle
 
+    # 安装 Python 依赖
+    - name: Install patchelf
+      run: pip install patchelf
+
+    # 执行项目脚本，生成 jniLibs 下的 .so 文件
+    - name: Build Runtime Libraries
+      run: python3 tools/build-runtime.py
+
+    # 开始 Gradle 构建
     - name: Build with Gradle
       run: gradle assembleDebug
 
