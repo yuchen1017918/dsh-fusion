@@ -1,9 +1,9 @@
-name: Build APK
+name: Build Full APK
 
 on:
   workflow_dispatch:
   push:
-    branches: [ "main", "full-bundled" ]
+    branches: [ "full-bundled" ]
 
 jobs:
   build:
@@ -20,20 +20,39 @@ jobs:
         distribution: 'temurin'
         cache: gradle
 
-    # 安装 Python 依赖
-    - name: Install patchelf
-      run: pip install patchelf
+    # 1. 安装 Python 环境和必备的 patchelf 工具
+    - name: Install Dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y patchelf python3-pip curl
+        pip3 install patchelf requests
 
-    # 执行项目脚本，生成 jniLibs 下的 .so 文件
-    - name: Build Runtime Libraries
-      run: python3 tools/build-runtime.py
+    # 2. 运行脚本拉取内核并生成 .so 文件
+    - name: Build Runtime Libraries (.so)
+      run: |
+        python3 tools/build-runtime.py
 
-    # 开始 Gradle 构建
+    # 3. 【关键】强制校验：检查 .so 是否真的生成了！
+    - name: Verify .so Files Exist
+      run: |
+        echo "正在检查 app/src/main/jniLibs 目录..."
+        if [ -z "$(find app/src/main/jniLibs -name '*.so' -print -quit 2>/dev/null)" ]; then
+          echo "❌ 错误：找不到任何 .so 文件！脚本可能因为网络问题拉取失败了。"
+          # 打印脚本的具体输出帮助排查
+          ls -la app/src/main/jniLibs || true
+          exit 1
+        else
+          echo "✅ 找到 .so 文件，列表如下："
+          find app/src/main/jniLibs -name "*.so"
+        fi
+
+    # 4. 执行 Gradle 构建
     - name: Build with Gradle
       run: gradle assembleDebug
 
+    # 5. 上传打包好的 APK
     - name: Upload APK Artifact
       uses: actions/upload-artifact@v4
       with:
-        name: DSH-Fusion-Debug-APK
+        name: DSH-Fusion-Full-APK
         path: "**/build/outputs/apk/debug/*.apk"
