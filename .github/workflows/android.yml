@@ -11,30 +11,17 @@ jobs:
 
     steps:
     - name: Checkout Source Code
-      uses: actions/checkout@v5
+      uses: actions/checkout@v4
 
     - name: Set up JDK 17
-      uses: actions/setup-java@v5
+      uses: actions/setup-java@v4
       with:
         java-version: '17'
         distribution: 'temurin'
         cache: gradle
 
-    - name: Build with Gradle (Auto-detect)
-      run: |
-        # 自动查找 gradlew 所在目录
-        GRADLEW_PATH=$(find . -name "gradlew" -type f | head -n 1)
-        if [ -z "$GRADLEW_PATH" ]; then
-          echo "错误：未找到 gradlew 文件！"
-          exit 1
-        fi
-        GRADLEW_DIR=$(dirname "$GRADLEW_PATH")
-        echo "找到 gradlew，位于目录: $GRADLEW_DIR"
-        
-        # 赋予执行权限并进入该目录构建
-        chmod +x "$GRADLEW_PATH"
-        cd "$GRADLEW_DIR"
-        ./gradlew assembleDebug
+    - name: Build with Gradle
+      run: gradle assembleDebug
 
     - name: Upload APK Artifact
       uses: actions/upload-artifact@v4
